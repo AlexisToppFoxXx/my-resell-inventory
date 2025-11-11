@@ -1,0 +1,10 @@
+/* src/index.css */
+/* stylelint-disable at-rule-no-unknown */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+/* stylelint-enable at-rule-no-unknown */
+
+/* Optional: If you want to use the 'Inter' font mentioned in your code, you can add it here: */
+/* @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap'); */
+/* body { font-family: 'Inter', sans-serif; } */
