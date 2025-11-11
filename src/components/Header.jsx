@@ -2,7 +2,7 @@
 import React from 'react';
 import { getAuth, signOut } from 'firebase/auth';
 
-const Header = ({ setView, userId }) => {
+const Header = ({ setView, userId, currentView, onNavigate }) => {
   const handleLogout = async () => {
     const auth = getAuth();
     try {
@@ -40,6 +40,12 @@ const Header = ({ setView, userId }) => {
             className={`px-4 py-2 rounded ${userId === 'quickadd' ? 'bg-blue-800' : 'bg-blue-500 hover:bg-blue-700'}`}
           >
             Quick Add
+          </button>
+          <button 
+            onClick={() => onNavigate('bulkqr')}
+            className={`px-4 py-2 rounded ${currentView === 'bulkqr' ? 'bg-blue-800' : 'bg-blue-500 hover:bg-blue-700'}`}
+          >
+            🖨️ Bulk QR
           </button>
         </div>
         <div className="flex items-center gap-4">

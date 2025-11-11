@@ -28,6 +28,7 @@ import Scanner from './views/Scanner.jsx';
 import ProductForm from './views/ProductForm.jsx';
 import QrGenerator from './views/QrGenerator.jsx';
 import QuickAdd from './views/QuickAdd.jsx';
+import BulkQrGenerator from './views/BulkQrGenerator.jsx';
 
 // Initialize Firebase with debug logging in development
 setLogLevel(import.meta.env.MODE === 'development' ? 'debug' : 'error');
@@ -65,7 +66,7 @@ function App() {
   const [isAuthReady, setIsAuthReady] = useState(false);
   
   // UI state
-  const [view, setView] = useState('inventory'); // 'inventory', 'scanner', 'form', 'qrgen', 'quickadd'
+  const [view, setView] = useState('inventory'); // 'inventory', 'scanner', 'form', 'qrgen', 'quickadd', 'bulkqr'
   const [globalError, setGlobalError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   
@@ -204,6 +205,13 @@ function App() {
             db={db}
             collectionPath={collectionPath}
             onComplete={() => setView('inventory')}
+          />
+        );
+      case 'bulkqr':
+        return (
+          <BulkQrGenerator
+            setView={setView}
+            setGlobalError={setGlobalError}
           />
         );
       case 'loading':
