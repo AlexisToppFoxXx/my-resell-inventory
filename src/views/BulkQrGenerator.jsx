@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { jsPDF } from 'jspdf';
 
-// Hook to load external script
 function useScript(src, globalName) {
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
@@ -26,14 +25,18 @@ function BulkQrGenerator({ setView, setGlobalError }) {
   const [quantity, setQuantity] = useState('');
   const [generating, setGenerating] = useState(false);
 
+  console.log('🔵🔵🔵 BulkQrGenerator NEW VERSION loaded! QR lib:', qrLibLoaded);
+
   // Get last 5 characters of UUID (after last dash)
   const getShortId = (uuid) => {
     if (!uuid) return '';
     const parts = uuid.split('-');
-    return parts[parts.length - 1].toUpperCase();
+    return parts[parts.length - 1].substring(0, 5).toUpperCase();
   };
 
   const handleGenerate = async () => {
+    console.log('🎯🎯🎯 NEW GENERATE BUTTON CLICKED! Quantity:', quantity);
+    
     const qty = parseInt(quantity);
     if (isNaN(qty) || qty < 1 || qty > 1000) {
       alert('Please enter a number between 1 and 1000');
@@ -41,87 +44,121 @@ function BulkQrGenerator({ setView, setGlobalError }) {
     }
 
     setGenerating(true);
-    console.log(`Generating ${qty} blank QR codes...`);
+    console.log(`✅ Starting generation of ${qty} QR codes...`);
 
     try {
+      if (!window.QRCode || !window.QRCode.toDataURL) {
+        throw new Error('QR Code library not loaded');
+      }
+      console.log('✓ QRCode library available');
+
       // Generate UUIDs and QR codes
       const qrCodes = [];
       for (let i = 0; i < qty; i++) {
         const uuid = crypto.randomUUID();
         const shortId = getShortId(uuid);
         
-        // Generate QR code as data URL
-        const dataUrl = await window.QRCode.toDataURL(uuid, {
+        console.log(`Generating QR ${i + 1}/${qty}: ${shortId}`);
+        
+        // Generate QR code with URL instead of just UUID
+        const qrUrl = `https://resell-inventory-flow.web.app/scan/${uuid}`;
+        
+        const dataUrl = await window.QRCode.toDataURL(qrUrl, {
           width: 600,
           margin: 2,
           errorCorrectionLevel: 'M',
-          color: {
-            dark: '#000000',
-            light: '#FFFFFF'
-          }
+          color: { dark: '#000000', light: '#FFFFFF' }
         });
         
+        console.log(`✓ QR ${i + 1} done, URL length: ${dataUrl.length}`);
         qrCodes.push({ uuid, shortId, dataUrl });
-        console.log(`Generated ${i + 1}/${qty}: ${shortId}`);
       }
 
-      console.log(`All ${qty} QR codes generated, creating PDF...`);
+      console.log(`✅ All ${qty} QR codes generated! Creating PDF...`);
 
-      // Create PDF with 2"x3" pages
+      // Create PDF with 1.88" x 2.88" pages
       const pdf = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
-        format: [50.8, 76.2],
+        format: [47.752, 73.152],
         compress: true
       });
 
+      console.log('PDF object created');
+
       for (let i = 0; i < qrCodes.length; i++) {
         const code = qrCodes[i];
+        console.log(`Adding page ${i + 1}/${qrCodes.length} for ${code.shortId}`);
         
         if (i > 0) {
-          pdf.addPage();
+          pdf.addPage([47.752, 73.152]);
         }
 
-        const pageWidth = 50.8;
-        const pageHeight = 76.2;
-        const qrSize = 40;
-        const qrX = (pageWidth - qrSize) / 2;
-        const qrY = 10;
+        const pageWidth = 47.752;
+        const pageHeight = 73.152;
+        const margin = 2.032;
+        const qrSize = pageWidth * 0.22;
 
         // White background
         pdf.setFillColor(255, 255, 255);
         pdf.rect(0, 0, pageWidth, pageHeight, 'F');
 
-        // Add QR code
-        pdf.addImage(
-          code.dataUrl,
-          'PNG',
-          qrX,
-          qrY,
-          qrSize,
-          qrSize,
-          undefined,
-          'FAST'
-        );
+        // Border
+        pdf.setLineWidth(0.5);
+        pdf.setDrawColor(0,0,0);
+        pdf.rect(margin, margin, pageWidth - (2*margin), pageHeight - (2*margin));
 
-        // Add short ID
-        pdf.setFontSize(24);
-        pdf.setFont('courier', 'bold');
-        pdf.setTextColor(0, 0, 0);
-        const textY = qrY + qrSize + 8;
-        pdf.text(code.shortId, pageWidth / 2, textY, { align: 'center' });
+        // Top center 4TL
+        const topCenterY = margin + (pageHeight * 0.06);
+        pdf.setFontSize(12);
+        pdf.setFont('helvetica', 'bold');
+        try { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center', stroke: true }); } catch(e) { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center' }); }
+
+        // Top-right QR (product)
+        const topRightX = pageWidth - margin - qrSize - 1;
+        const topRightY = topCenterY + 2;
+        pdf.addImage(code.dataUrl, 'PNG', topRightX, topRightY, qrSize, qrSize, undefined, 'FAST');
+
+        // Bottom-left QR (website)
+        try { const djWebsiteQrDataUrl = await window.QRCode.toDataURL(APP_CONFIG.DJ_WEBSITE_QR_URL, { width: 300, margin: 1 }); pdf.addImage(djWebsiteQrDataUrl, 'PNG', margin + 1, pageHeight - margin - qrSize - (pageHeight * 0.06) - 6.35, qrSize, qrSize); } catch (e) { }
+
+        // Centered placeholder name/ID (left→right), Helvetica Bold 13pt
+        pdf.setFontSize(13); pdf.setFont('helvetica','bold');
+        const bottomWebsiteY = pageHeight - margin - 3;
+        const centerBetween = (topCenterY + bottomWebsiteY) / 2;
+        const maxWidth = pageWidth - (2 * margin) - 4;
+        const labelText = code.shortId || 'NAME SHOULD SHOW HERE';
+        let labelLines = pdf.splitTextToSize(labelText, maxWidth);
+        if (!labelLines || labelLines.length === 0 || labelLines.every(l => !String(l || '').trim())) {
+          labelLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
+        }
+        labelLines = labelLines.slice(0, 2);
+        const lineHeight = 6.5;
+        const totalHeight = Math.min(labelLines.length, 2) * lineHeight;
+
+        const topSafe = topCenterY + 2 + qrSize + 1.5;
+        const bottomSafe = pageHeight - margin - qrSize - (pageHeight * 0.06) - 6.35 - 1.5;
+        const centerCandidate = (topCenterY + bottomWebsiteY) / 2;
+        const minCenter = topSafe + (totalHeight / 2);
+        const maxCenter = bottomSafe - (totalHeight / 2);
+        const centerY = Math.max(minCenter, Math.min(centerCandidate, maxCenter));
+        const startY = centerY - (totalHeight / 2) + (lineHeight / 2);
+
+        labelLines.forEach((line, idx) => {
+          pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
+        });
+
+        console.log(`✓ Text added for ${code.shortId}`);
       }
 
-      // Save PDF
-      const filename = `Blank-QR-Labels-${qty}-${Date.now()}.pdf`;
+      const filename = `QR-Labels-${qty}-${Date.now()}.pdf`;
       pdf.save(filename);
       
-      console.log('✅ PDF saved:', filename);
-      alert(`✅ Generated ${qty} QR labels!\n\nThe PDF has been downloaded.\nYou can print these and add products to inventory later using the Scanner.`);
+      console.log('✅✅✅ PDF SAVED!', filename);
+      alert(`✅ ${qty} labels downloaded!`);
       
     } catch (error) {
-      console.error('❌ Error:', error);
-      setGlobalError('Error generating QR codes: ' + error.message);
+      console.error('❌ ERROR:', error);
       alert('Error: ' + error.message);
     } finally {
       setGenerating(false);
@@ -129,26 +166,18 @@ function BulkQrGenerator({ setView, setGlobalError }) {
   };
 
   if (!qrLibLoaded) {
-    return (
-      <div className="flex justify-center items-center p-8">
-        <div className="text-gray-600">Loading QR code generator...</div>
-      </div>
-    );
+    return <div className="flex justify-center items-center p-8"><div className="text-gray-600">Loading...</div></div>;
   }
 
   return (
     <div className="max-w-2xl mx-auto">
       <div className="bg-white rounded-lg shadow p-8">
-        <h2 className="text-3xl font-bold mb-2">🖨️ Bulk QR Code Generator</h2>
-        <p className="text-gray-600 mb-6">
-          Generate blank QR codes to print and stick on products. Add product details later by scanning the codes.
-        </p>
+        <h2 className="text-3xl font-bold mb-2">🖨️ Bulk QR Generator</h2>
+        <p className="text-gray-600 mb-6">Generate blank QR codes for your thermal printer (2" x 3" labels)</p>
 
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-semibold mb-2">
-              How many QR codes do you want to generate?
-            </label>
+            <label className="block text-sm font-semibold mb-2">How many QR codes?</label>
             <input
               type="number"
               min="1"
@@ -159,9 +188,6 @@ function BulkQrGenerator({ setView, setGlobalError }) {
               className="w-full px-4 py-3 text-lg border-2 rounded-lg focus:border-blue-500 focus:outline-none"
               disabled={generating}
             />
-            <p className="text-xs text-gray-500 mt-1">
-              Maximum 1000 labels per batch
-            </p>
           </div>
 
           <div className="flex gap-3">
@@ -170,27 +196,16 @@ function BulkQrGenerator({ setView, setGlobalError }) {
               disabled={!quantity || generating}
               className="flex-1 bg-green-600 text-white py-4 rounded-lg hover:bg-green-700 disabled:bg-gray-300 font-semibold text-lg"
             >
-              {generating ? '⏳ Generating PDF...' : `📄 Generate ${quantity || '___'} Labels`}
+              {generating ? '⏳ Generating...' : `📄 Generate ${quantity || '___'} Labels`}
             </button>
             <button
               onClick={() => setView('inventory')}
               disabled={generating}
-              className="px-6 bg-gray-300 text-gray-700 py-4 rounded-lg hover:bg-gray-400 disabled:opacity-50"
+              className="px-6 bg-gray-300 text-gray-700 py-4 rounded-lg hover:bg-gray-400"
             >
               Cancel
             </button>
           </div>
-        </div>
-
-        <div className="mt-8 p-4 bg-blue-50 rounded-lg border border-blue-200">
-          <h3 className="font-semibold mb-2">📋 How it works:</h3>
-          <ol className="text-sm space-y-1 list-decimal list-inside text-gray-700">
-            <li>Enter the number of labels you need</li>
-            <li>Click "Generate" to download a PDF</li>
-            <li>Print the PDF on your Phomemo M221 (2"x3" labels)</li>
-            <li>Stick labels on your products</li>
-            <li>Later: scan each QR code to add product details</li>
-          </ol>
         </div>
       </div>
     </div>

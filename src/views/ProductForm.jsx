@@ -1,22 +1,62 @@
 // src/views/ProductForm.js
 import React, { useState, useEffect, memo } from 'react';
-import { doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { doc, setDoc, deleteDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
+import { jsPDF } from 'jspdf';
+import { APP_CONFIG } from '../config';
 
 const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId, setView, setGlobalError }) => {
   const [formData, setFormData] = useState({
-    productName: '', sku: '', purchasePrice: '', msrp: '',
-    compEbayPrice: '', condition: 'New', photosTaken: false,
-    purchaseDate: '', listDate: '', platform: '',
-    soldDate: '', sellPrice: '', sellingFees: '',
-    photoUrls: [],
+    itemType: 'inventory', // NEW: Default to inventory
+    product: '',
+    description: '',
+    createdBy: '',
+    locationType: 'unknown',
+    location: '',
+    brand: '',
+    type: '',
+    size: '',
+    color: '',
+    condition: '',
+    purchasePrice: '',
+    listingPrice: '',
+    photosTaken: false,
+    photoLink: '',
+    notes: '',
+    purchaseDate: '',
+    listDate: '',
+    listingUrl: '', // NEW
+    platform: '',
+    soldDate: '',
+    sellPrice: '',
+    sellingFees: '',
+    sellingNotes: '', // NEW: Notes about sale
+    category: 'Clothing',
+    externalSKU: '', // NEW: Store external SKU
   });
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [uploadingPhotos, setUploadingPhotos] = useState(false);
+  const [locations, setLocations] = useState([]); // NEW: Available locations
+  const [generatingQR, setGeneratingQR] = useState(false); // ADD THIS
   const storage = getStorage();
   const auth = getAuth();
+
+  // NEW: Load available locations
+  useEffect(() => {
+    const loadLocations = async () => {
+      try {
+        const q = query(collection(db, collectionPath), where('itemType', '==', 'location'));
+        const snapshot = await getDocs(q);
+        const locs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setLocations(locs);
+      } catch (err) {
+        console.error('Error loading locations:', err);
+      }
+    };
+    loadLocations();
+  }, [db, collectionPath]);
 
   useEffect(() => {
     console.log('[ProductForm] useEffect triggered - currentProduct:', currentProduct, 'currentQrCodeId:', currentQrCodeId);
@@ -24,25 +64,45 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
     if (currentProduct) {
       console.log('[ProductForm] Loading existing product data');
       setFormData({
-        productName: currentProduct.productName || '', sku: currentProduct.sku || '',
-        purchasePrice: currentProduct.purchasePrice || '', msrp: currentProduct.msrp || '',
-        compEbayPrice: currentProduct.compEbayPrice || '', condition: currentProduct.condition || 'New',
+        itemType: currentProduct.itemType || 'inventory', // Load existing or default
+        product: currentProduct.product || '',
+        description: currentProduct.description || '',
+        createdBy: currentProduct.createdBy || '',
+        locationType: currentProduct.locationType || 'unknown',
+        location: currentProduct.location || '',
+        brand: currentProduct.brand || '', 
+        type: currentProduct.type || '',
+        size: currentProduct.size || '', color: currentProduct.color || '',
+        condition: currentProduct.condition || '', notes: currentProduct.notes || '',
+        purchasePrice: currentProduct.purchasePrice || '', listingPrice: currentProduct.listingPrice || '',
         photosTaken: currentProduct.photosTaken || false, purchaseDate: currentProduct.purchaseDate || '',
-        listDate: currentProduct.listDate || '', platform: currentProduct.platform || '',
-        soldDate: currentProduct.soldDate || '', sellPrice: currentProduct.sellPrice || '',
+        listDate: currentProduct.listDate || '',
+        listingUrl: currentProduct.listingUrl || '', // NEW: Load URL
+        platform: currentProduct.platform || '',
+        soldDate: currentProduct.soldDate || '', // FIX: Don't auto-fill, keep exactly what's in DB
+        sellPrice: currentProduct.sellPrice || '',
         sellingFees: currentProduct.sellingFees || '',
-        photoUrls: currentProduct.photoUrls || [],
+        sellingNotes: currentProduct.sellingNotes || '', // NEW: Load selling notes
+        category: currentProduct.category || 'Clothing',
+        externalSKU: currentProduct.externalSKU || '', // NEW: Load external SKU
       });
     } else {
-      // New product - auto-fill SKU with last 4 characters of QR code ID
+      // New product
       const autoSku = currentQrCodeId ? currentQrCodeId.slice(-4).toUpperCase() : '';
       console.log('[ProductForm] New product - Auto-filling SKU:', autoSku, 'from QR ID:', currentQrCodeId);
       setFormData({
-        productName: '', sku: autoSku, purchasePrice: '', msrp: '',
-        compEbayPrice: '', condition: 'New', photosTaken: false,
+        itemType: 'inventory', // NEW: Default to inventory
+        product: '',
+        description: '',
+        createdBy: '',
+        location: '',
+        brand: '', 
+        type: '', size: '', color: '', condition: '', notes: '',
+        purchasePrice: '', listingPrice: '', photosTaken: false,
         purchaseDate: '', listDate: '', platform: '',
         soldDate: '', sellPrice: '', sellingFees: '',
-        photoUrls: [],
+        sellingNotes: '', // NEW
+        category: 'Clothing',
       });
     }
   }, [currentProduct, currentQrCodeId]);
@@ -115,25 +175,78 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!currentQrCodeId) {
-      setGlobalError("No QR Code ID is associated with this item. Cannot save.");
+    
+    if (!formData.product.trim()) {
+      alert('Please enter a product name');
       return;
     }
+    
+    if (!formData.createdBy) {
+      alert('Please select who created this item');
+      return;
+    }
+
+    // NEW: Validate that Platform requires List Date
+    if (formData.platform.trim() && !formData.listDate) {
+      alert('❌ If you enter a "Platform", you must also set a "List Date".\n\nDon\'t fill in Platform until you\'ve actually listed the item!\n\nIf you haven\'t listed it yet, leave Platform blank and it will show in "Not Yet Listed" priority.');
+      return;
+    }
+
+    // Existing: List Date requires Platform
+    if (formData.listDate && !formData.platform.trim()) {
+      alert('❌ If you set a "List Date", you must also enter a "Platform" (e.g., eBay, Poshmark).\n\nList Date without Platform means the item isn\'t actually listed yet!');
+      return;
+    }
+
     setIsSaving(true);
 
     const productData = {
-      ...formData,
-      qrCodeId: currentQrCodeId,
+      itemType: formData.itemType, // NEW: Save itemType
+      product: formData.product,
+      description: formData.description || '',
+      createdBy: formData.createdBy || '',
+      locationType: formData.locationType || 'unknown',
+      location: formData.location || '',
+      brand: formData.brand || '', 
+      type: formData.type || '',
+      size: formData.size || '', color: formData.color || '',
+      condition: formData.condition || '', notes: formData.notes || '',
       purchasePrice: parseFloat(formData.purchasePrice) || 0,
       msrp: parseFloat(formData.msrp) || 0,
       compEbayPrice: parseFloat(formData.compEbayPrice) || 0,
+      listingPrice: parseFloat(formData.listingPrice) || 0, // FIXED: Was missing!
       sellPrice: parseFloat(formData.sellPrice) || 0,
       sellingFees: parseFloat(formData.sellingFees) || 0,
+      listDate: formData.listDate || '',
+      listingUrl: formData.listingUrl || '', // NEW: Save URL
+      platform: formData.platform || '',
+      photoLink: formData.photoLink || '', // ADD THIS
+      photosTaken: formData.photosTaken || false, // FIXED: Was missing!
+      externalSKU: formData.externalSKU || '', // NEW: Save external SKU
+      soldDate: formData.soldDate || '', // FIX: Explicitly save empty string if cleared
+      sellingNotes: formData.sellingNotes || '',
     };
 
     try {
       const docRef = doc(db, collectionPath, currentQrCodeId);
       await setDoc(docRef, productData, { merge: true });
+
+      // NEW: Create reference document for external SKU
+      if (formData.externalSKU && formData.externalSKU.trim()) {
+        const sanitizedSKU = formData.externalSKU.replace(/[^a-zA-Z0-9-_]/g, '_');
+        const externalRef = {
+          redirectTo: currentQrCodeId,
+          isExternalSKU: true,
+          originalSKU: formData.externalSKU,
+          itemType: formData.itemType,
+          createdAt: new Date().toISOString()
+        };
+        
+        await setDoc(doc(db, collectionPath, sanitizedSKU), externalRef);
+        console.log(`[ProductForm] Created external SKU reference: ${sanitizedSKU} -> ${currentQrCodeId}`);
+      }
+
+      alert('✅ Product saved successfully!'); // ADD CONFIRMATION
       setView('list');
     } catch (err) {
       console.error("Error saving product:", err);
@@ -163,279 +276,677 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
     }
   };
 
+  // Load QR Code library
+  useEffect(() => {
+    if (!window.QRCode) {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js';
+      script.async = true;
+      document.body.appendChild(script);
+    }
+  }, []);
+
+  const getShortId = (uuid) => {
+    if (!uuid) return '';
+    const parts = uuid.split('-');
+    return parts[parts.length - 1].substring(0, 5).toUpperCase();
+  };
+
+  const generateQRLabel = async () => {
+    setGeneratingQR(true);
+
+    try {
+      if (!window.QRCode) {
+        alert('QR Code library is loading, please try again.');
+        setGeneratingQR(false);
+        return;
+      }
+
+      // Use external SKU if available, otherwise use our UUID
+      const displaySKU = formData.externalSKU || currentQrCodeId;
+      const qrUrl = `https://resell-inventory-flow.web.app/scan/${displaySKU}`;
+      
+      // FIXED: Get LAST 10 characters instead of first 10
+      const shortId = formData.externalSKU 
+        ? formData.externalSKU.slice(-10).toUpperCase() // Last 10 chars
+        : getShortId(currentQrCodeId);
+      
+      const productName = (formData.product || '').toUpperCase();
+
+      // Generate QR code
+      const dataUrl = await window.QRCode.toDataURL(qrUrl, {
+        width: 600,
+        margin: 2,
+        errorCorrectionLevel: 'M',
+        color: { dark: '#000000', light: '#FFFFFF' }
+      });
+
+      // Create PDF with exact label size: 1.88" x 2.88" (47.752mm x 73.152mm)
+      const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: [47.752, 73.152],
+        compress: true
+      });
+
+      const pageWidth = 47.752;
+      const pageHeight = 73.152;
+      const margin = 2.032; // 0.08 in in mm
+      const qrSize = pageWidth * 0.22; // ~22% of width
+
+      // Generate product QR
+      const productQrDataUrl = await window.QRCode.toDataURL(qrUrl, { width: 600, margin: 1, errorCorrectionLevel: 'M' });
+      // Generate website QR
+      const websiteQrDataUrl = await window.QRCode.toDataURL(APP_CONFIG.DJ_WEBSITE_QR_URL, { width: 400, margin: 1, errorCorrectionLevel: 'M' });
+
+      // White background
+      pdf.setFillColor(255, 255, 255);
+      pdf.rect(0, 0, pageWidth, pageHeight, 'F');
+
+      // Border
+      pdf.setLineWidth(0.5);
+      pdf.setDrawColor(0, 0, 0);
+      pdf.rect(margin, margin, pageWidth - (2 * margin), pageHeight - (2 * margin));
+
+      // Top center "4TL" (about 5-10% from top)
+      const topCenterY = margin + (pageHeight * 0.06);
+      pdf.setFontSize(12);
+      pdf.setFont('helvetica', 'bold');
+      try { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center', stroke: true }); } catch (e) { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center' }); }
+
+      // Top-right QR (product), below the 4TL text
+      const topRightX = pageWidth - margin - qrSize - 1;
+      const topRightY = topCenterY + 2;
+      pdf.addImage(productQrDataUrl, 'PNG', topRightX, topRightY, qrSize, qrSize);
+
+      // Bottom-left QR (website), just above bottom website text (lifted by 6.35mm to avoid overlap)
+      const bottomLeftX = margin + 1;
+      const bottomLeftY = pageHeight - margin - qrSize - (pageHeight * 0.06) - 6.35;
+      pdf.addImage(websiteQrDataUrl, 'PNG', bottomLeftX, bottomLeftY, qrSize, qrSize);
+
+      // Centered product name (left→right), Helvetica Bold 13pt, placed between 4TL and website
+      pdf.setFontSize(13);
+      pdf.setFont('helvetica', 'bold');
+      // compute the center Y between the top 4TL area and bottom website text
+      const bottomWebsiteY = pageHeight - margin - 3;
+      const maxWidth = pageWidth - (2 * margin) - 4;
+      let nameLines = pdf.splitTextToSize(productName || 'NAME SHOULD SHOW HERE', maxWidth);
+      // fallback if empty
+      if (!nameLines || nameLines.length === 0 || nameLines.every(l => !String(l || '').trim())) {
+        nameLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
+      }
+      // limit to two lines to avoid overlap
+      nameLines = nameLines.slice(0, 2);
+      const lineHeight = 6.5; // approximate for 13pt
+      const totalHeight = Math.min(nameLines.length, 2) * lineHeight;
+
+      // Safe vertical bounds (avoid overlapping QRs)
+      const topSafe = topCenterY + 2 + qrSize + 1.5; // below the top-right QR + buffer
+      const bottomSafe = bottomLeftY - 1.5; // above bottom-left QR + buffer
+
+      // preferred center
+      const centerCandidate = (topCenterY + bottomWebsiteY) / 2;
+      // clamp center to safe region accounting for half of the block's height
+      const minCenter = topSafe + (totalHeight / 2);
+      const maxCenter = bottomSafe - (totalHeight / 2);
+      const centerY = Math.max(minCenter, Math.min(centerCandidate, maxCenter));
+
+      // compute startY from clamped center
+      const startY = centerY - (totalHeight / 2) + (lineHeight / 2);
+      nameLines.forEach((line, idx) => {
+        pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
+      });
+
+      // BOTTOM CENTER: WEBSITE TEXT (plain left-to-right) set to 13pt
+      pdf.setFontSize(13);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text(APP_CONFIG.DJ_WEBSITE.replace(/^https?:\/\//, ''), pageWidth / 2, pageHeight - margin - 3, { align: 'center' });
+
+      // Bottom center: website text
+      pdf.setFontSize(7);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(APP_CONFIG.DJ_WEBSITE.replace(/^https?:\/\//, ''), pageWidth / 2, pageHeight - margin - 3, { align: 'center' });
+
+      // Download PDF
+      const fileName = `QR_${formData.product || 'Item'}_${shortId}.pdf`;
+      pdf.save(fileName);
+
+    } catch (error) {
+      console.error('Error generating QR label:', error);
+      alert(`Error: ${error.message}`);
+    } finally {
+      setGeneratingQR(false);
+    }
+  };
+
   return (
-    <form onSubmit={handleSubmit} className="p-4 space-y-6">
-      <div className="bg-white p-4 rounded-lg shadow-md">
-        <h3 className="text-lg font-semibold text-gray-900">
-          {currentProduct ? "Edit Product" : "New Product"}
-        </h3>
-        <p className="text-sm text-gray-500 font-mono">QR ID: {currentQrCodeId}</p>
-      </div>
-
-      <div className="bg-white p-4 rounded-lg shadow-md space-y-4">
-        <div>
-          <label htmlFor="productName" className="block text-sm font-medium text-gray-700">Product Name</label>
-          <input
-            type="text"
-            name="productName"
-            id="productName"
-            value={formData.productName}
-            onChange={handleChange}
-            placeholder="e.g., Vintage Sony Walkman"
-            required
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-          />
-        </div>
-        <div>
-          <label htmlFor="sku" className="block text-sm font-medium text-gray-700">Custom SKU</label>
-          <input
-            type="text"
-            name="sku"
-            id="sku"
-            value={formData.sku}
-            onChange={handleChange}
-            placeholder="e.g., SW-001"
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-          />
-        </div>
-        <div>
-          <label htmlFor="condition" className="block text-sm font-medium text-gray-700">Condition</label>
-          <select 
-            id="condition" 
-            name="condition" 
-            value={formData.condition} 
-            onChange={handleChange} 
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-          >
-            <option>New</option>
-            <option>Used - Open Box</option>
-            <option>For Parts</option>
-          </select>
-        </div>
-        <div className="flex items-center">
-          <input
-            type="checkbox"
-            name="photosTaken"
-            id="photosTaken"
-            checked={formData.photosTaken}
-            onChange={handleChange}
-            className="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
-          />
-          <label htmlFor="photosTaken" className="ml-2 block text-sm font-medium text-gray-900">
-            Photos Taken?
-          </label>
-        </div>
-        
-        {/* Photo Upload Section */}
-        <div className="mt-4 space-y-3">
-          <h5 className="text-sm font-semibold text-gray-800">Product Photos</h5>
-          <div className="flex items-center gap-3">
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={handlePhotoUpload}
-              disabled={uploadingPhotos}
-              className="block w-full text-sm text-gray-500
-                file:mr-4 file:py-2 file:px-4
-                file:rounded-md file:border-0
-                file:text-sm file:font-semibold
-                file:bg-indigo-50 file:text-indigo-700
-                hover:file:bg-indigo-100
-                disabled:opacity-50"
-            />
+    <div className="max-w-2xl mx-auto p-6">
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        {/* Header with SKU display */}
+        <div className="flex justify-between items-start mb-4">
+          <div className="flex-1">
+            <h2 className="text-2xl font-bold">
+              {currentProduct ? 'Edit Product' : 'Add New Product'}
+            </h2>
+            
+            {/* Show External SKU if it exists (Vista Auction, etc.) */}
+            {formData.externalSKU && (
+              <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded">
+                <p className="text-sm font-medium text-blue-900">
+                  External SKU: <span className="font-mono text-lg">{formData.externalSKU}</span>
+                </p>
+                <p className="text-xs text-blue-600 mt-1">
+                  📦 Vista Auction or external QR code
+                </p>
+              </div>
+            )}
+            
+            {/* Show our internal SKU */}
+            {currentQrCodeId && (
+              <p className="text-sm text-gray-500 mt-2 font-mono">
+                Internal ID: {getShortId(currentQrCodeId)} 
+                <span className="text-xs text-gray-400 ml-2">(for our tracking)</span>
+              </p>
+            )}
           </div>
-          {uploadingPhotos && <p className="text-sm text-indigo-600">Uploading photos...</p>}
           
-          {/* Display uploaded photos */}
-          {formData.photoUrls.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3">
-              {formData.photoUrls.map((url, index) => (
-                <div key={index} className="relative group">
-                  <img
-                    src={url}
-                    alt={`Product ${index + 1}`}
-                    className="w-full h-32 object-cover rounded-lg border border-gray-300"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => handleDeletePhoto(url, index)}
-                    className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="bg-white p-4 rounded-lg shadow-md space-y-4">
-        <h4 className="text-md font-semibold text-gray-800">Pricing</h4>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label htmlFor="purchasePrice" className="block text-sm font-medium text-gray-700">Purchase Price</label>
-            <input
-              type="number"
-              name="purchasePrice"
-              id="purchasePrice"
-              value={formData.purchasePrice}
-              onChange={handleChange}
-              step="0.01"
-              placeholder="10.00"
-              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-            />
-          </div>
-          <div>
-            <label htmlFor="msrp" className="block text-sm font-medium text-gray-700">MSRP</label>
-            <input
-              type="number"
-              name="msrp"
-              id="msrp"
-              value={formData.msrp}
-              onChange={handleChange}
-              step="0.01"
-              placeholder="99.99"
-              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-            />
-          </div>
-          <div>
-            <label htmlFor="compEbayPrice" className="block text-sm font-medium text-gray-700">Comp eBay Price</label>
-            <input
-              type="number"
-              name="compEbayPrice"
-              id="compEbayPrice"
-              value={formData.compEbayPrice}
-              onChange={handleChange}
-              step="0.01"
-              placeholder="45.00"
-              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-white p-4 rounded-lg shadow-md space-y-4">
-        <h4 className="text-md font-semibold text-gray-800">Timeline & Listing</h4>
-        <div>
-          <label htmlFor="purchaseDate" className="block text-sm font-medium text-gray-700">Purchase Date</label>
-          <input
-            type="date"
-            name="purchaseDate"
-            id="purchaseDate"
-            value={formData.purchaseDate}
-            onChange={handleChange}
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-          />
-        </div>
-        <div>
-          <label htmlFor="listDate" className="block text-sm font-medium text-gray-700">List Date</label>
-          <input
-            type="date"
-            name="listDate"
-            id="listDate"
-            value={formData.listDate}
-            onChange={handleChange}
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-          />
-        </div>
-        <div>
-          <label htmlFor="platform" className="block text-sm font-medium text-gray-700">Platform Listed On</label>
-          <input
-            type="text"
-            name="platform"
-            id="platform"
-            value={formData.platform}
-            onChange={handleChange}
-            placeholder="e.g., eBay, Poshmark"
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-          />
-        </div>
-      </div>
-
-      <div className="bg-white p-4 rounded-lg shadow-md space-y-4">
-        <h4 className="text-md font-semibold text-gray-800">Sold Information</h4>
-        <div>
-          <label htmlFor="soldDate" className="block text-sm font-medium text-gray-700">Sold Date</label>
-          <input
-            type="date"
-            name="soldDate"
-            id="soldDate"
-            value={formData.soldDate}
-            onChange={handleChange}
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label htmlFor="sellPrice" className="block text-sm font-medium text-gray-700">Sell Price</label>
-            <input
-              type="number"
-              name="sellPrice"
-              id="sellPrice"
-              value={formData.sellPrice}
-              onChange={handleChange}
-              step="0.01"
-              placeholder="40.00"
-              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-            />
-          </div>
-          <div>
-            <label htmlFor="sellingFees" className="block text-sm font-medium text-gray-700">Selling Fees</label>
-            <input
-              type="number"
-              name="sellingFees"
-              id="sellingFees"
-              value={formData.sellingFees}
-              onChange={handleChange}
-              step="0.01"
-              placeholder="5.20"
-              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-            />
-          </div>
-        </div>
-        <div className="pt-4 border-t border-gray-200">
-          <h5 className="text-lg font-semibold">Calculated Profit:
-            <span className={`ml-2 ${profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              ${profit.toFixed(2)}
-            </span>
-          </h5>
-          <p className="text-xs text-gray-500">(Sell Price - Purchase Price - Selling Fees)</p>
-        </div>
-      </div>
-
-      <div className="flex flex-col sm:flex-row gap-4">
-        <button
-          type="submit"
-          disabled={isSaving}
-          className="w-full flex-1 justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-base font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
-        >
-          {isSaving ? 'Saving...' : 'Save Product'}
-        </button>
-        <button
-          type="button"
-          onClick={() => setView('list')}
-          className="w-full sm:w-auto py-3 px-4 rounded-lg text-base font-medium text-gray-700 bg-gray-100 hover:bg-gray-200"
-        >
-          Cancel
-        </button>
-      </div>
-
-      {currentProduct && (
-        <div className="pt-4 border-t border-dashed border-gray-300">
+          {/* Print QR Button */}
           <button
-            type="button"
-            onClick={handleDelete}
-            className={`w-full text-red-600 hover:text-red-800 text-sm font-medium disabled:opacity-50 ${isDeleting ? 'animate-pulse' : ''}`}
+            onClick={generateQRLabel}
+            disabled={generatingQR}
+            className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-400 transition-colors flex items-center gap-2 font-semibold shadow-md"
           >
-            {isDeleting ? 'Click Again to Confirm Delete' : 'Delete This Item'}
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v4h8z" />
+            </svg>
+            {generatingQR ? 'Generating...' : 'PRINT QR'}
           </button>
         </div>
-      )}
-    </form>
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="bg-white p-4 rounded-lg shadow-md">
+            <h3 className="text-lg font-semibold text-gray-900">
+              {currentProduct ? "Edit Product" : "New Product"}
+            </h3>
+            <p className="text-sm text-gray-500 font-mono">QR ID: {currentQrCodeId}</p>
+          </div>
+
+          <div className="bg-white p-4 rounded-lg shadow-md space-y-4">
+            {/* NEW: Item Type Dropdown - FIRST FIELD */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Item Type <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={formData.itemType}
+                onChange={(e) => setFormData({ ...formData, itemType: e.target.value })}
+                className="w-full border border-gray-300 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-purple-500 text-lg font-medium"
+                required
+              >
+                <option value="inventory">📦 Inventory (Item to resell)</option>
+                <option value="expense">💵 Expense (Business cost)</option>
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                💡 Choose "Inventory" for items you plan to sell, "Expense" for business costs
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Product Name <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={formData.product}
+                onChange={(e) => setFormData({ ...formData, product: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="e.g., Nike Air Jordan 1"
+                required
+              />
+            </div>
+
+            {/* NEW: Location Type Dropdown */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Location Type
+              </label>
+              <select
+                value={formData.locationType}
+                onChange={(e) => setFormData({ ...formData, locationType: e.target.value })}
+                className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+              >
+                <option value="unknown">Unknown</option>
+                <option value="outside">Outside</option>
+                <option value="upstairs">Upstairs</option>
+                <option value="living-room">Living Room</option>
+                <option value="dining-room">Dining Room</option>
+                <option value="den">Den</option>
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                💡 General area where this item is stored
+              </p>
+            </div>
+
+            {/* Specific Location (from Locations tab) */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Specific Storage Location
+              </label>
+              <input
+                type="text"
+                placeholder="e.g., Shelf A, Box 3, Bin 12, Garage North Wall"
+                value={formData.location}
+                onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                💡 Optional: Free text - describe exactly where this item is stored
+              </p>
+            </div>
+
+            {/* NEW: Description - Below Product Name */}
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Description
+              </label>
+              <textarea
+                value={formData.description}
+                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="Brief description or key details about this item..."
+                rows="2"
+              />
+            </div>
+
+            {/* Created By Dropdown */}
+            <div>
+              <label htmlFor="createdBy" className="block text-sm font-medium text-gray-700">Created By</label>
+              <select
+                id="createdBy"
+                name="createdBy"
+                value={formData.createdBy}
+                onChange={handleChange}
+                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+              >
+                <option value="">-- Select Creator --</option>
+                <option value="Boss Doss">Boss Doss</option>
+                <option value="DJ Nipsey">DJ Nipsey</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="brand" className="block text-sm font-medium text-gray-700">Brand</label>
+              <input
+                type="text"
+                name="brand"
+                id="brand"
+                value={formData.brand}
+                onChange={handleChange}
+                placeholder="e.g., Nike"
+                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+              />
+            </div>
+            <div>
+              <label htmlFor="type" className="block text-sm font-medium text-gray-700">Type</label>
+              <input
+                type="text"
+                name="type"
+                id="type"
+                value={formData.type}
+                onChange={handleChange}
+                placeholder="e.g., Sneakers"
+                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+              />
+            </div>
+            <div>
+              <label htmlFor="size" className="block text-sm font-medium text-gray-700">Size</label>
+              <input
+                type="text"
+                name="size"
+                id="size"
+                value={formData.size}
+                onChange={handleChange}
+                placeholder="e.g., 10.5"
+                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+              />
+            </div>
+            <div>
+              <label htmlFor="color" className="block text-sm font-medium text-gray-700">Color</label>
+              <input
+                type="text"
+                name="color"
+                id="color"
+                value={formData.color}
+                onChange={handleChange}
+                placeholder="e.g., Red"
+                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+              />
+            </div>
+            <div>
+              <label htmlFor="condition" className="block text-sm font-medium text-gray-700">Condition</label>
+              <select 
+                id="condition" 
+                name="condition" 
+                value={formData.condition} 
+                onChange={handleChange} 
+                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+              >
+                <option>New</option>
+                <option>Used - Open Box</option>
+                <option>For Parts</option>
+              </select>
+            </div>
+            <div className="flex items-center">
+              <input
+                type="checkbox"
+                name="photosTaken"
+                id="photosTaken"
+                checked={formData.photosTaken}
+                onChange={handleChange}
+                className="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+              />
+              <label htmlFor="photosTaken" className="ml-2 block text-sm font-medium text-gray-900">
+                Photos Taken?
+              </label>
+            </div>
+            
+            {/* Photos Section - UPDATED */}
+            <div>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={formData.photosTaken}
+                  onChange={(e) => setFormData({ ...formData, photosTaken: e.target.checked })}
+                  className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+                />
+                <span className="text-sm font-medium text-gray-700">Photos Taken</span>
+              </label>
+            </div>
+
+            {/* NEW: Photo Link Input */}
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Photo Link (Google Drive, iCloud, Dropbox, etc.)
+              </label>
+              <input
+                type="url"
+                value={formData.photoLink}
+                onChange={(e) => setFormData({ ...formData, photoLink: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="https://drive.google.com/... or https://www.icloud.com/..."
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                💡 Upload photos to Google Drive or iCloud, make shareable, and paste the link
+              </p>
+              {formData.photoLink && (
+                <a
+                  href={formData.photoLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-sm text-indigo-600 hover:text-indigo-800 underline mt-1"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v4h8z" />
+                  </svg>
+                  View Photos
+                </a>
+              )}
+            </div>
+
+            {/* Notes */}
+            <div className="md:col-span-2">
+              <label htmlFor="notes" className="block text-sm font-medium text-gray-700">Notes</label>
+              <textarea
+                name="notes"
+                id="notes"
+                value={formData.notes}
+                onChange={handleChange}
+                rows="3"
+                placeholder="Any additional information about the product"
+                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-lg shadow-md space-y-4">
+            <h4 className="text-md font-semibold text-gray-800">Pricing</h4>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="purchasePrice" className="block text-sm font-medium text-gray-700">Purchase Price</label>
+                <input
+                  type="number"
+                  name="purchasePrice"
+                  id="purchasePrice"
+                  value={formData.purchasePrice}
+                  onChange={handleChange}
+                  step="0.01"
+                  placeholder="10.00"
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                />
+              </div>
+              <div>
+                <label htmlFor="listingPrice" className="block text-sm font-medium text-gray-700">Listing Price</label>
+                <input
+                  type="number"
+                  name="listingPrice"
+                  id="listingPrice"
+                  value={formData.listingPrice}
+                  onChange={handleChange}
+                  step="0.01"
+                  placeholder="15.00"
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-lg shadow-md space-y-4">
+            <h4 className="text-md font-semibold text-gray-800">Timeline & Listing</h4>
+            <div>
+              <label htmlFor="purchaseDate" className="block text-sm font-medium text-gray-700">Purchase Date</label>
+              <input
+                type="date"
+                name="purchaseDate"
+                id="purchaseDate"
+                value={formData.purchaseDate}
+                onChange={handleChange}
+                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+              />
+            </div>
+            <div>
+              <label htmlFor="listDate" className="block text-sm font-medium text-gray-700 mb-1">
+                List Date
+                {formData.listDate && !formData.platform.trim() && (
+                  <span className="ml-2 text-red-600 text-xs">⚠️ Platform required!</span>
+                )}
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={formData.listDate}
+                  onChange={(e) => setFormData({ ...formData, listDate: e.target.value })}
+                  className={`flex-1 w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 ${
+                    formData.listDate && !formData.platform.trim()
+                      ? 'border-red-500 focus:ring-red-500'
+                      : 'border-gray-300 focus:ring-purple-500'
+                  }`}
+                />
+                {/* NEW: Clear / Not Yet Listed button */}
+                <button
+                  type="button"
+                  onClick={() => setFormData({ ...formData, listDate: '' })}
+                  className="px-3 py-2 bg-gray-200 rounded text-sm hover:bg-gray-300"
+                  title="Clear List Date (mark as Not Yet Listed)"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            {/* NEW: Listing URL - Full Width */}
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Listing URL
+              </label>
+              <input
+                type="url"
+                value={formData.listingUrl}
+                onChange={(e) => setFormData({ ...formData, listingUrl: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="https://www.ebay.com/itm/... or https://poshmark.com/..."
+              />
+              {formData.listingUrl && (
+                <a
+                  href={formData.listingUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-sm text-indigo-600 hover:text-indigo-800 underline mt-1"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v4h8z" />
+                </svg>
+                View Listing
+              </a>
+              )}
+            </div>
+
+            <div>
+              <label htmlFor="platform" className="block text-sm font-medium text-gray-700 mb-1">
+                Platform Listed On
+                {formData.platform.trim() && !formData.listDate && (
+                  <span className="ml-2 text-red-600 text-xs">* Requires List Date!</span>
+                )}
+              </label>
+              <input
+                type="text"
+                name="platform"
+                id="platform"
+                value={formData.platform}
+                onChange={handleChange}
+                placeholder="e.g., eBay, Poshmark"
+                className={`mt-1 block w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm ${
+                  formData.platform.trim() && !formData.listDate
+                    ? 'border-red-500 focus:ring-red-500'
+                    : ''
+                }`}
+              />
+              <p className="text-xs text-orange-600 mt-1 font-medium">
+                ⚠️ Only fill this in AFTER you've actually listed the item!
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-lg shadow-md space-y-4">
+            <h4 className="text-md font-semibold text-gray-800">Sold Information</h4>
+            <div className="md:col-span-2 border-t pt-4">
+              <h3 className="text-lg font-semibold mb-3">Sold Information</h3>
+              <div className="grid grid-cols-1 gap-4">
+                {/* Sold Date - FULL WIDTH WITH CLEAR BUTTON */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Sold Date</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="date"
+                      value={formData.soldDate}
+                      onChange={(e) => setFormData({ ...formData, soldDate: e.target.value })}
+                      className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, soldDate: '' })}
+                      className="px-4 py-2 bg-orange-500 text-white rounded-md text-sm hover:bg-orange-600 font-medium whitespace-nowrap"
+                      title="Clear Sold Date (move back to Active Inventory)"
+                    >
+                      Clear Date
+                    </button>
+                  </div>
+                  <p className="text-xs text-orange-600 mt-1 font-medium">
+                    💡 Clear this date to move item back to Active Inventory
+                  </p>
+                </div>
+
+                {/* Sell Price and Selling Fees - SIDE BY SIDE */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Sell Price</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={formData.sellPrice}
+                      onChange={(e) => setFormData({ ...formData, sellPrice: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder="0.00"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Selling Fees</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={formData.sellingFees}
+                      onChange={(e) => setFormData({ ...formData, sellingFees: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+
+                {/* Selling Notes - Full Width */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Selling Notes</label>
+                  <input
+                    type="text"
+                    value={formData.sellingNotes}
+                    onChange={(e) => setFormData({ ...formData, sellingNotes: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    placeholder="e.g., Buyer: John Doe, Shipped via USPS, Tracking: 123456"
+                  />
+                </div>
+              </div>
+
+              {/* Profit Display */}
+              <div className="pt-4 border-t border-gray-200">
+                <h5 className="text-lg font-semibold">Calculated Profit:
+                  <span className={`ml-2 ${profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    ${profit.toFixed(2)}
+                  </span>
+                </h5>
+                <p className="text-xs text-gray-500">(Sell Price - Purchase Price - Selling Fees)</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-4">
+            <button
+              type="submit"
+              disabled={isSaving}
+              className="w-full flex-1 justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-base font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+            >
+              {isSaving ? 'Saving...' : 'Save Product'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setView('list')}
+              className="w-full sm:w-auto py-3 px-4 rounded-lg text-base font-medium text-gray-700 bg-gray-100 hover:bg-gray-200"
+            >
+              Cancel
+            </button>
+          </div>
+
+          {currentProduct && (
+            <div className="pt-4 border-t border-dashed border-gray-300">
+              <button
+                type="button"
+                onClick={handleDelete}
+                className={`w-full text-red-600 hover:text-red-800 text-sm font-medium disabled:opacity-50 ${isDeleting ? 'animate-pulse' : ''}`}
+              >
+                {isDeleting ? 'Click Again to Confirm Delete' : 'Delete This Item'}
+              </button>
+            </div>
+          )}
+        </form>
+      </div>
+    </div>
   );
 });
 
