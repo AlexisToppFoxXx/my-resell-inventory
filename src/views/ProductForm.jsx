@@ -332,12 +332,11 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
       const pageWidth = 47.752;
       const pageHeight = 73.152;
       const margin = 2.032; // 0.08 in in mm
-      const qrSize = pageWidth * 0.22; // ~22% of width
+      // double size so QR scans reliably (about 50% of page width)
+      const qrSize = pageWidth * 0.5;
 
-      // Generate product QR
+      // Generate product QR (single QR only)
       const productQrDataUrl = await window.QRCode.toDataURL(qrUrl, { width: 600, margin: 1, errorCorrectionLevel: 'M' });
-      // Generate website QR
-      const websiteQrDataUrl = await window.QRCode.toDataURL(APP_CONFIG.DJ_WEBSITE_QR_URL, { width: 400, margin: 1, errorCorrectionLevel: 'M' });
 
       // White background
       pdf.setFillColor(255, 255, 255);
@@ -354,58 +353,25 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
       pdf.setFont('helvetica', 'bold');
       try { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center', stroke: true }); } catch (e) { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center' }); }
 
-      // Top-right QR (product), below the 4TL text
-      const topRightX = pageWidth - margin - qrSize - 1;
-      const topRightY = topCenterY + 2;
-      pdf.addImage(productQrDataUrl, 'PNG', topRightX, topRightY, qrSize, qrSize);
+      // Centered product QR (below 4TL text)
+      const qrX = (pageWidth - qrSize) / 2;
+      const qrY = topCenterY + 2;
+      pdf.addImage(productQrDataUrl, 'PNG', qrX, qrY, qrSize, qrSize);
 
-      // Bottom-left QR (website), just above bottom website text (lifted by 6.35mm to avoid overlap)
-      const bottomLeftX = margin + 1;
-      const bottomLeftY = pageHeight - margin - qrSize - (pageHeight * 0.06) - 6.35;
-      pdf.addImage(websiteQrDataUrl, 'PNG', bottomLeftX, bottomLeftY, qrSize, qrSize);
-
-      // Centered product name (left→right), Helvetica Bold 13pt, placed between 4TL and website
-      pdf.setFontSize(13);
+      // Product name large and bold, placed underneath the QR
+      pdf.setFontSize(24);
       pdf.setFont('helvetica', 'bold');
-      // compute the center Y between the top 4TL area and bottom website text
-      const bottomWebsiteY = pageHeight - margin - 3;
       const maxWidth = pageWidth - (2 * margin) - 4;
       let nameLines = pdf.splitTextToSize(productName || 'NAME SHOULD SHOW HERE', maxWidth);
-      // fallback if empty
       if (!nameLines || nameLines.length === 0 || nameLines.every(l => !String(l || '').trim())) {
         nameLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
       }
-      // limit to two lines to avoid overlap
       nameLines = nameLines.slice(0, 2);
-      const lineHeight = 6.5; // approximate for 13pt
-      const totalHeight = Math.min(nameLines.length, 2) * lineHeight;
-
-      // Safe vertical bounds (avoid overlapping QRs)
-      const topSafe = topCenterY + 2 + qrSize + 1.5; // below the top-right QR + buffer
-      const bottomSafe = bottomLeftY - 1.5; // above bottom-left QR + buffer
-
-      // preferred center
-      const centerCandidate = (topCenterY + bottomWebsiteY) / 2;
-      // clamp center to safe region accounting for half of the block's height
-      const minCenter = topSafe + (totalHeight / 2);
-      const maxCenter = bottomSafe - (totalHeight / 2);
-      const centerY = Math.max(minCenter, Math.min(centerCandidate, maxCenter));
-
-      // compute startY from clamped center
-      const startY = centerY - (totalHeight / 2) + (lineHeight / 2);
+      const lineHeight = 10; // for ~24pt text
+      const startY = qrY + qrSize + 6;
       nameLines.forEach((line, idx) => {
         pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
       });
-
-      // BOTTOM CENTER: WEBSITE TEXT (plain left-to-right) set to 13pt
-      pdf.setFontSize(13);
-      pdf.setFont('helvetica', 'normal');
-      pdf.text(APP_CONFIG.DJ_WEBSITE.replace(/^https?:\/\//, ''), pageWidth / 2, pageHeight - margin - 3, { align: 'center' });
-
-      // Bottom center: website text
-      pdf.setFontSize(7);
-      pdf.setFont('helvetica', 'bold');
-      pdf.text(APP_CONFIG.DJ_WEBSITE.replace(/^https?:\/\//, ''), pageWidth / 2, pageHeight - margin - 3, { align: 'center' });
 
       // Download PDF
       const fileName = `QR_${formData.product || 'Item'}_${shortId}.pdf`;

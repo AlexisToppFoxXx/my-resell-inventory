@@ -136,7 +136,7 @@ const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCod
         const pageWidth = 47.752;
         const pageHeight = 73.152;
         const margin = 2.032;
-        const qrSize = pageWidth * 0.22;
+        const qrSize = pageWidth * 0.5; // much larger for reliable scanning
 
         // Background
         pdf.setFillColor(255,255,255);
@@ -150,47 +150,24 @@ const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCod
         pdf.setFontSize(12); pdf.setFont('helvetica','bold');
         try { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center', stroke: true }); } catch (e) { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center' }); }
 
-        // Top-right product QR (below 4TL)
-        const topRightX = pageWidth - margin - qrSize - 1;
-        const topRightY = topCenterY + 2;
-        try { pdf.addImage(code.dataUrl, 'PNG', topRightX, topRightY, qrSize, qrSize); } catch (err) { console.warn('Failed to render product QR', err); }
+        // Centered product QR (below 4TL)
+        const qrX = (pageWidth - qrSize) / 2;
+        const qrY = topCenterY + 2;
+        try { pdf.addImage(code.dataUrl, 'PNG', qrX, qrY, qrSize, qrSize); } catch (err) { console.warn('Failed to render product QR', err); }
 
-        // Bottom-left website QR (lifted by 6.35mm)
-        const bottomLeftX = margin + 1;
-        const bottomLeftY = pageHeight - margin - qrSize - (pageHeight * 0.06) - 6.35;
-        try { const djWebsiteQrDataUrl = await window.QRCode.toDataURL(APP_CONFIG.DJ_WEBSITE_QR_URL, { width: 300, margin: 1 }); pdf.addImage(djWebsiteQrDataUrl, 'PNG', bottomLeftX, bottomLeftY, qrSize, qrSize); } catch (err) { console.warn('Website QR failed', err); }
-
-        // Centered product name (left→right), Helvetica Bold 13pt
-        pdf.setFontSize(13); pdf.setFont('helvetica','bold');
-        const bottomWebsiteY = pageHeight - margin - 3;
-        const centerBetween = (topCenterY + bottomWebsiteY) / 2;
+        // Product name large and bold underneath QR
+        pdf.setFontSize(24); pdf.setFont('helvetica','bold');
         const maxWidth = pageWidth - (2 * margin) - 4;
         let nameLines = pdf.splitTextToSize((productName || '').toUpperCase(), maxWidth);
         if (!nameLines || nameLines.length === 0 || nameLines.every(l => !String(l || '').trim())) {
           nameLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
         }
         nameLines = nameLines.slice(0, 2);
-        const lineHeight = 6.5;
-        const totalHeight = Math.min(nameLines.length, 2) * lineHeight;
-
-        const topSafe = topCenterY + 2 + qrSize + 1.5;
-        const bottomSafe = bottomLeftY - 1.5;
-        const centerCandidate = (topCenterY + bottomWebsiteY) / 2;
-        const minCenter = topSafe + (totalHeight / 2);
-        const maxCenter = bottomSafe - (totalHeight / 2);
-        const centerY = Math.max(minCenter, Math.min(centerCandidate, maxCenter));
-        const startY = centerY - (totalHeight / 2) + (lineHeight / 2);
-
+        const lineHeight = 10;
+        const startY = qrY + qrSize + 6;
         nameLines.forEach((line, idx) => {
           pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
         });
-
-        // Bottom center website text 13pt
-        pdf.setFontSize(13); pdf.setFont('helvetica','normal');
-        pdf.text(APP_CONFIG.DJ_WEBSITE.replace(/^https?:\/\//, ''), pageWidth/2, pageHeight - margin - 3, { align: 'center' });
-
-        // Bottom center website text
-        pdf.setFontSize(7); pdf.setFont('helvetica','bold'); pdf.text(APP_CONFIG.DJ_WEBSITE.replace(/^https?:\/\//, ''), pageWidth / 2, pageHeight - margin - 3, { align: 'center' });
       }
 
       const filename = `QR-Labels-${new Date().toISOString().slice(0,10)}.pdf`;
@@ -259,31 +236,21 @@ const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCod
         pdf.setFontSize(12); pdf.setFont('helvetica','bold');
         try { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center', stroke: true }); } catch(e) { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center' }); }
 
-        // Top-right QR (product)
-        const topRightX = pageWidth - 1.6 - qrSize - 1;
-        const topRightY = topCenterY + 2;
-        pdf.addImage(dataUrl, 'PNG', topRightX, topRightY, qrSize, qrSize, undefined, 'FAST');
+        // Centered QR (product)
+        const qrX = (pageWidth - qrSize) / 2;
+        const qrY = topCenterY + 2;
+        pdf.addImage(dataUrl, 'PNG', qrX, qrY, qrSize, qrSize, undefined, 'FAST');
 
-        // Bottom-left QR (website)
-        try { const djWebsiteQrDataUrl = await window.QRCode.toDataURL(APP_CONFIG.DJ_WEBSITE_QR_URL, { width: 300, margin: 1 }); pdf.addImage(djWebsiteQrDataUrl, 'PNG', 1.6 + 1, pageHeight - 1.6 - qrSize - (pageHeight * 0.06) - 6.35, qrSize, qrSize); } catch (e) { }
-
-        // Large vertical placeholder name (top→bottom), Helvetica Bold 14pt, constrained between QRs
-        pdf.setFontSize(14); pdf.setFont('helvetica','bold');
-        const topGap = topCenterY + 2 + qrSize;
-        const bottomGap = pageHeight - margin - qrSize - (pageHeight * 0.06) - 6.35 - 2;
-        const availableHeight = Math.max(bottomGap - topGap, pageHeight - (2 * margin) - 4);
-        const placeholderLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', availableHeight);
-        // center vertically on the page
-        const centerY = pageHeight / 2;
-        pdf.text(placeholderLines, pageWidth / 2, centerY, { angle: 90, align: 'center' });
-        const totalHeight = Math.min(placeholderLines.length, 3) * lineHeight;
-        const startY = (pageHeight / 2) - (totalHeight / 2) + (lineHeight / 2);
-        placeholderLines.slice(0, 3).forEach((line, idx) => {
+        // Placeholder product name in large bold horizontal text
+        pdf.setFontSize(24); pdf.setFont('helvetica','bold');
+        const maxWidth = pageWidth - (2 * margin) - 4;
+        let placeholderLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
+        placeholderLines = placeholderLines.slice(0, 2);
+        const lineHeight = 10;
+        const startY = qrY + qrSize + 6;
+        placeholderLines.forEach((line, idx) => {
           pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
         });
-
-        // Bottom website
-        pdf.setFontSize(7); pdf.setFont('helvetica','bold'); pdf.text(APP_CONFIG.DJ_WEBSITE.replace(/^https?:\/\//, ''), pageWidth /2, pageHeight - 1.6 - 3, { align: 'center' });
       }
 
       pdf.save(`QR_Labels_${quantity}_${Date.now()}.pdf`);

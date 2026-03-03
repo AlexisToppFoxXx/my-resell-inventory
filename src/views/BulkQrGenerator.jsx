@@ -97,7 +97,7 @@ function BulkQrGenerator({ setView, setGlobalError }) {
         const pageWidth = 47.752;
         const pageHeight = 73.152;
         const margin = 2.032;
-        const qrSize = pageWidth * 0.22;
+        const qrSize = pageWidth * 0.5; // larger for scanning
 
         // White background
         pdf.setFillColor(255, 255, 255);
@@ -114,18 +114,13 @@ function BulkQrGenerator({ setView, setGlobalError }) {
         pdf.setFont('helvetica', 'bold');
         try { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center', stroke: true }); } catch(e) { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center' }); }
 
-        // Top-right QR (product)
-        const topRightX = pageWidth - margin - qrSize - 1;
-        const topRightY = topCenterY + 2;
-        pdf.addImage(code.dataUrl, 'PNG', topRightX, topRightY, qrSize, qrSize, undefined, 'FAST');
+        // Centered QR (product)
+        const qrX = (pageWidth - qrSize) / 2;
+        const qrY = topCenterY + 2;
+        pdf.addImage(code.dataUrl, 'PNG', qrX, qrY, qrSize, qrSize, undefined, 'FAST');
 
-        // Bottom-left QR (website)
-        try { const djWebsiteQrDataUrl = await window.QRCode.toDataURL(APP_CONFIG.DJ_WEBSITE_QR_URL, { width: 300, margin: 1 }); pdf.addImage(djWebsiteQrDataUrl, 'PNG', margin + 1, pageHeight - margin - qrSize - (pageHeight * 0.06) - 6.35, qrSize, qrSize); } catch (e) { }
-
-        // Centered placeholder name/ID (left→right), Helvetica Bold 13pt
-        pdf.setFontSize(13); pdf.setFont('helvetica','bold');
-        const bottomWebsiteY = pageHeight - margin - 3;
-        const centerBetween = (topCenterY + bottomWebsiteY) / 2;
+        // Label text (ID or name) large and bold beneath QR
+        pdf.setFontSize(24); pdf.setFont('helvetica','bold');
         const maxWidth = pageWidth - (2 * margin) - 4;
         const labelText = code.shortId || 'NAME SHOULD SHOW HERE';
         let labelLines = pdf.splitTextToSize(labelText, maxWidth);
@@ -133,17 +128,8 @@ function BulkQrGenerator({ setView, setGlobalError }) {
           labelLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
         }
         labelLines = labelLines.slice(0, 2);
-        const lineHeight = 6.5;
-        const totalHeight = Math.min(labelLines.length, 2) * lineHeight;
-
-        const topSafe = topCenterY + 2 + qrSize + 1.5;
-        const bottomSafe = pageHeight - margin - qrSize - (pageHeight * 0.06) - 6.35 - 1.5;
-        const centerCandidate = (topCenterY + bottomWebsiteY) / 2;
-        const minCenter = topSafe + (totalHeight / 2);
-        const maxCenter = bottomSafe - (totalHeight / 2);
-        const centerY = Math.max(minCenter, Math.min(centerCandidate, maxCenter));
-        const startY = centerY - (totalHeight / 2) + (lineHeight / 2);
-
+        const lineHeight = 10;
+        const startY = qrY + qrSize + 6;
         labelLines.forEach((line, idx) => {
           pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
         });
