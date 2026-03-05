@@ -1,24 +1,45 @@
 import React from 'react';
 
-function InventoryStats({ inventory, onShowNotListed }) {
+function InventoryStats({ inventory, onStatClick = () => {}, onCategoryClick = () => {} }) {
   // Calculate statistics
   const totalItems = inventory.length;
-  
+  const totalInventoryValue = inventory.reduce((sum, item) => {
+    return sum + (parseFloat(item.purchasePrice) || 0);
+  }, 0);
+
   const byCategory = inventory.reduce((acc, item) => {
     const cat = item.category || 'Uncategorized';
     acc[cat] = (acc[cat] || 0) + 1;
     return acc;
   }, {});
-  
+
   const totalListed = inventory.filter(item => item.listDate || item.platform).length;
   const totalSold = inventory.filter(item => item.soldDate).length;
   const needsPhotos = inventory.filter(item => !item.photosTaken).length;
   const hasPhotos = inventory.filter(item => item.photosTaken).length;
-  
-  const totalInventoryValue = inventory.reduce((sum, item) => {
+
+  const notListedItems = inventory.filter(item => !item.listDate && !item.platform);
+  const notListedCount = notListedItems.length;
+  const notListedCost = notListedItems.reduce((sum, item) => {
     return sum + (parseFloat(item.purchasePrice) || 0);
   }, 0);
-  
+
+  const ebayCount = inventory.filter(item => (item.platform || '').toLowerCase() === 'ebay').length;
+  const facebookCount = inventory.filter(item => (item.platform || '').toLowerCase() === 'facebook').length;
+  const needsDimensions = inventory.filter(item => {
+    return !item.length || !item.width || !item.height || !item.weight;
+  }).length;
+
+  // calculate profit for sold items (include shipping cost if provided)
+  const totalProfit = inventory.reduce((sum, item) => {
+    if (!item.soldDate) return sum;
+    const sellPrice = parseFloat(item.sellPrice) || 0;
+    const purchasePrice = parseFloat(item.purchasePrice) || 0;
+    const sellingFees = parseFloat(item.sellingFees) || 0;
+    const ship = parseFloat(item.shippingCost) || 0;
+    return sum + (sellPrice - purchasePrice - sellingFees - ship);
+  }, 0);
+
   const totalListingValue = inventory.reduce((sum, item) => {
     return sum + (parseFloat(item.listingPrice) || 0);
   }, 0);
@@ -33,82 +54,106 @@ function InventoryStats({ inventory, onShowNotListed }) {
     return acc;
   }, {});
 
-  // NEW: Not Yet Listed items
-  const notListedItems = inventory.filter(item => !item.listDate && !item.platform);
-
   return (
-    <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-      {/* Existing header */}
-      <div className="flex items-center gap-3 mb-4">
-        <span className="text-4xl">📊</span>
-        <div>
-          <h2 className="text-2xl font-bold">Inventory Overview</h2>
-          <p className="text-sm text-gray-600">Real-time statistics</p>
-        </div>
-      </div>
-
-      {/* NEW: Prominent Not Yet Listed Section */}
-      {notListedItems.length > 0 && (
-        <div 
-          className="mb-6 p-4 bg-orange-50 border-2 border-orange-300 rounded-lg cursor-pointer hover:bg-orange-100 transition-colors"
-          onClick={onShowNotListed}
+    <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+      <h2 className="text-xl font-bold text-gray-800 mb-4">📊 Inventory Statistics</h2>
+      
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+        {/* Total Items (click clears filters) */}
+        <button
+          onClick={() => onStatClick('total')}
+          className="bg-blue-50 p-4 rounded-lg text-left hover:bg-blue-100 transition-colors"
         >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <svg className="w-8 h-8 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-              <div>
-                <h3 className="text-2xl font-bold text-orange-900">
-                  {notListedItems.length} Item{notListedItems.length !== 1 ? 's' : ''} Not Yet Listed
-                </h3>
-                <p className="text-sm text-orange-700">Click to view items ready to list</p>
-              </div>
-            </div>
-            <svg className="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </div>
-        </div>
-      )}
-
-      {/* Main Stats Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        {/* Total Items */}
-        <div className="bg-blue-50 p-4 rounded-lg">
           <p className="text-sm text-gray-600">Total Items</p>
           <p className="text-2xl font-bold text-blue-600">{totalItems}</p>
-        </div>
-        
+          <p className="text-xs text-gray-500 mt-1">
+            Cost: ${totalInventoryValue.toFixed(2)}
+          </p>
+        </button>
+
         {/* Listed */}
-        <div className="bg-green-50 p-4 rounded-lg">
+        <button
+          onClick={() => onStatClick('listed')}
+          className="bg-green-50 p-4 rounded-lg text-left hover:bg-green-100 transition-colors"
+        >
           <p className="text-sm text-gray-600">Listed</p>
           <p className="text-2xl font-bold text-green-600">{totalListed}</p>
-        </div>
-        
+        </button>
+
         {/* Sold */}
-        <div className="bg-purple-50 p-4 rounded-lg">
+        <button
+          onClick={() => onStatClick('sold')}
+          className="bg-purple-50 p-4 rounded-lg text-left hover:bg-purple-100 transition-colors"
+        >
           <p className="text-sm text-gray-600">Sold</p>
           <p className="text-2xl font-bold text-purple-600">{totalSold}</p>
-        </div>
-        
+          <p className="text-xs text-gray-500 mt-1">
+            Profit: ${totalProfit.toFixed(2)}
+          </p>
+        </button>
+
         {/* Needs Photos */}
-        <div className="bg-orange-50 p-4 rounded-lg">
+        <button
+          onClick={() => onStatClick('needsPhotos')}
+          className="bg-orange-50 p-4 rounded-lg text-left hover:bg-orange-100 transition-colors"
+        >
           <p className="text-sm text-gray-600">Needs Photos</p>
           <p className="text-2xl font-bold text-orange-600">{needsPhotos}</p>
-        </div>
-        
+        </button>
+
         {/* Has Photos */}
-        <div className="bg-teal-50 p-4 rounded-lg">
+        <button
+          onClick={() => onStatClick('hasPhotos')}
+          className="bg-teal-50 p-4 rounded-lg text-left hover:bg-teal-100 transition-colors"
+        >
           <p className="text-sm text-gray-600">Has Photos</p>
           <p className="text-2xl font-bold text-teal-600">{hasPhotos}</p>
-        </div>
-        
-        {/* Inventory Value */}
+        </button>
+
+        {/* Inventory Value (non-clickable) */}
         <div className="bg-indigo-50 p-4 rounded-lg">
           <p className="text-sm text-gray-600">Inventory Cost</p>
           <p className="text-xl font-bold text-indigo-600">${totalInventoryValue.toFixed(2)}</p>
         </div>
+
+        {/* New stat: Not Listed */}
+        <button
+          onClick={() => onStatClick('notListed')}
+          className="bg-red-50 p-4 rounded-lg text-left hover:bg-red-100 transition-colors col-span-2 md:col-span-1"
+        >
+          <p className="text-sm text-gray-600">Not Listed</p>
+          <p className="text-2xl font-bold text-red-600">{notListedCount}</p>
+          <p className="text-xs text-gray-500 mt-1">
+            Cost: ${notListedCost.toFixed(2)}
+          </p>
+        </button>
+
+        {/* New stat: eBay Listed */}
+        <button
+          onClick={() => onStatClick('ebay')}
+          className="bg-yellow-50 p-4 rounded-lg text-left hover:bg-yellow-100 transition-colors"
+        >
+          <p className="text-sm text-gray-600">eBay Listed</p>
+          <p className="text-2xl font-bold text-yellow-600">{ebayCount}</p>
+        </button>
+
+        {/* New stat: Facebook Listed */}
+        <button
+          onClick={() => onStatClick('facebook')}
+          className="bg-blue-50 p-4 rounded-lg text-left hover:bg-blue-100 transition-colors"
+        >
+          <p className="text-sm text-gray-600">Facebook Listed</p>
+          <p className="text-2xl font-bold text-blue-600">{facebookCount}</p>
+        </button>
+
+        {/* New stat: Needs Dimensions/Weight */}
+        <button
+          onClick={() => onStatClick('needsDimensions')}
+          className="bg-gray-50 p-4 rounded-lg text-left hover:bg-gray-100 transition-colors"
+        >
+          <p className="text-sm text-gray-600">Needs Dimensions/Weight</p>
+          <p className="text-2xl font-bold text-gray-600">{needsDimensions}</p>
+        </button>
       </div>
 
       {/* Category Breakdown */}
@@ -116,10 +161,14 @@ function InventoryStats({ inventory, onShowNotListed }) {
         <h3 className="text-lg font-semibold text-gray-700 mb-3">By Category</h3>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           {Object.entries(byCategory).map(([category, count]) => (
-            <div key={category} className="bg-gray-50 p-3 rounded-lg border border-gray-200">
+            <button
+              key={category}
+              onClick={() => onCategoryClick(category)}
+              className="bg-gray-50 p-3 rounded-lg border border-gray-200 text-left hover:bg-gray-100 transition-colors"
+            >
               <p className="text-xs text-gray-600 truncate" title={category}>{category}</p>
               <p className="text-lg font-bold text-gray-800">{count}</p>
-            </div>
+            </button>
           ))}
         </div>
       </div>

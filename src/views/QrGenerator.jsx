@@ -205,6 +205,7 @@ const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCod
       const pageWidth = 47.752;
       const pageHeight = 73.152;
       const qrSize = pageWidth * 0.22;
+      const margin = 1.6; // safe border margin used below
 
       for (let i = 0; i < quantity; i++) {
         const uuid = crypto.randomUUID();

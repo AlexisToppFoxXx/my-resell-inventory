@@ -25,6 +25,12 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
     photoLink: '',
     notes: '',
     purchaseDate: '',
+    length: '',
+    width: '',
+    height: '',
+    weight: '',
+    shippingCost: '',
+    autoFeePercent: '',
     listDate: '',
     listingUrl: '', // NEW
     platform: '',
@@ -76,6 +82,12 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
         condition: currentProduct.condition || '', notes: currentProduct.notes || '',
         purchasePrice: currentProduct.purchasePrice || '', listingPrice: currentProduct.listingPrice || '',
         photosTaken: currentProduct.photosTaken || false, purchaseDate: currentProduct.purchaseDate || '',
+        length: currentProduct.length || '',
+        width: currentProduct.width || '',
+        height: currentProduct.height || '',
+        weight: currentProduct.weight || '',
+        shippingCost: currentProduct.shippingCost || '',
+        autoFeePercent: currentProduct.autoFeePercent || '',
         listDate: currentProduct.listDate || '',
         listingUrl: currentProduct.listingUrl || '', // NEW: Load URL
         platform: currentProduct.platform || '',
@@ -159,10 +171,19 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: type === 'checkbox' ? checked : value
-    }));
+    setFormData(prev => {
+      let updated = {
+        ...prev,
+        [name]: type === 'checkbox' ? checked : value
+      };
+      // optional auto-fee calculation
+      const pct = parseFloat(updated.autoFeePercent);
+      if (!isNaN(pct) && pct > 0) {
+        const sell = parseFloat(updated.sellPrice) || 0;
+        updated.sellingFees = (sell * (pct / 100)).toFixed(2);
+      }
+      return updated;
+    });
   };
 
   const profit = (() => {
@@ -212,18 +233,11 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
       size: formData.size || '', color: formData.color || '',
       condition: formData.condition || '', notes: formData.notes || '',
       purchasePrice: parseFloat(formData.purchasePrice) || 0,
-      msrp: parseFloat(formData.msrp) || 0,
-      compEbayPrice: parseFloat(formData.compEbayPrice) || 0,
-      listingPrice: parseFloat(formData.listingPrice) || 0, // FIXED: Was missing!
-      sellPrice: parseFloat(formData.sellPrice) || 0,
-      sellingFees: parseFloat(formData.sellingFees) || 0,
-      listDate: formData.listDate || '',
-      listingUrl: formData.listingUrl || '', // NEW: Save URL
-      platform: formData.platform || '',
-      photoLink: formData.photoLink || '', // ADD THIS
-      photosTaken: formData.photosTaken || false, // FIXED: Was missing!
-      externalSKU: formData.externalSKU || '', // NEW: Save external SKU
-      soldDate: formData.soldDate || '', // FIX: Explicitly save empty string if cleared
+      length: parseFloat(formData.length) || 0,
+      width: parseFloat(formData.width) || 0,
+      height: parseFloat(formData.height) || 0,
+      weight: parseFloat(formData.weight) || 0,
+      shippingCost: parseFloat(formData.shippingCost) || 0,
       sellingNotes: formData.sellingNotes || '',
     };
 
@@ -487,6 +501,9 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
                 <option value="living-room">Living Room</option>
                 <option value="dining-room">Dining Room</option>
                 <option value="den">Den</option>
+                <option value="sold">Sold</option>
+                <option value="decided-to-keep">Decided to Keep</option>
+                <option value="trash-broken">Trash/Broken</option>
               </select>
               <p className="text-xs text-gray-500 mt-1">
                 💡 General area where this item is stored
@@ -522,6 +539,86 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
                 placeholder="Brief description or key details about this item..."
                 rows="2"
               />
+            </div>
+
+            {/* Dimensions & weight */}
+            <div className="grid grid-cols-2 gap-4 md:col-span-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Length</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={formData.length}
+                  name="length"
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  placeholder="inches"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Width</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={formData.width}
+                  name="width"
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  placeholder="inches"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Height</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={formData.height}
+                  name="height"
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  placeholder="inches"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Weight</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={formData.weight}
+                  name="weight"
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  placeholder="lbs"
+                />
+              </div>
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Shipping Cost</label>
+              <input
+                type="number"
+                step="0.01"
+                value={formData.shippingCost}
+                name="shippingCost"
+                onChange={handleChange}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="0.00"
+              />
+            </div>
+            {/* Optional automatic fees */}
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Auto Fee % (optional)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={formData.autoFeePercent}
+                name="autoFeePercent"
+                onChange={handleChange}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="e.g., 15 for 15%"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Enter a percentage to automatically calculate selling fees from the sell price.
+              </p>
             </div>
 
             {/* Created By Dropdown */}

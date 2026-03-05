@@ -13,7 +13,8 @@ const SoldInventory = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
     const sellPrice = parseFloat(item.sellPrice) || 0;
     const purchasePrice = parseFloat(item.purchasePrice) || 0;
     const sellingFees = parseFloat(item.sellingFees) || 0;
-    return sum + (sellPrice - purchasePrice - sellingFees);
+    const shipping = parseFloat(item.shippingCost) || 0;
+    return sum + (sellPrice - purchasePrice - sellingFees - shipping);
   }, 0);
 
   const totalRevenue = soldItems.reduce((sum, item) => sum + (parseFloat(item.sellPrice) || 0), 0);
@@ -42,14 +43,16 @@ const SoldInventory = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
         return new Date(b.soldDate || 0) - new Date(a.soldDate || 0);
       case 'oldest-sold':
         return new Date(a.soldDate || 0) - new Date(b.soldDate || 0);
-      case 'profit-high':
+      case 'profit-high': {
         const profitA = (parseFloat(a.sellPrice) || 0) - (parseFloat(a.purchasePrice) || 0) - (parseFloat(a.sellingFees) || 0);
         const profitB = (parseFloat(b.sellPrice) || 0) - (parseFloat(b.purchasePrice) || 0) - (parseFloat(b.sellingFees) || 0);
         return profitB - profitA;
-      case 'profit-low':
+      }
+      case 'profit-low': {
         const profitA2 = (parseFloat(a.sellPrice) || 0) - (parseFloat(a.purchasePrice) || 0) - (parseFloat(a.sellingFees) || 0);
         const profitB2 = (parseFloat(b.sellPrice) || 0) - (parseFloat(b.purchasePrice) || 0) - (parseFloat(b.sellingFees) || 0);
         return profitA2 - profitB2;
+      }
       default:
         return 0;
     }
@@ -59,7 +62,8 @@ const SoldInventory = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
     const sellPrice = parseFloat(item.sellPrice) || 0;
     const purchasePrice = parseFloat(item.purchasePrice) || 0;
     const sellingFees = parseFloat(item.sellingFees) || 0;
-    return (sellPrice - purchasePrice - sellingFees).toFixed(2);
+    const shipping = parseFloat(item.shippingCost) || 0;
+    return (sellPrice - purchasePrice - sellingFees - shipping).toFixed(2);
   };
 
   const handleEdit = (product) => {
@@ -184,6 +188,29 @@ const SoldInventory = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                         <>
                           <dt className="font-semibold text-gray-600">Selling Notes:</dt>
                           <dd className="text-gray-900">{product.sellingNotes}</dd>
+                        </>
+                      )}
+                      {product.shippingCost && (
+                        <>
+                          <dt className="font-semibold text-gray-600">Shipping Cost:</dt>
+                          <dd className="text-gray-900">${parseFloat(product.shippingCost).toFixed(2)}</dd>
+                        </>
+                      )}
+                      {product.purchaseDate && (
+                        <>
+                          <dt className="font-semibold text-gray-600">Days in Inventory:</dt>
+                          <dd className="text-gray-900">
+                            {(() => {
+                              try {
+                                const start = new Date(product.purchaseDate);
+                                const end = new Date(product.soldDate || new Date());
+                                const diff = Math.floor((end - start) / (1000 * 60 * 60 * 24));
+                                return diff;
+                              } catch (e) {
+                                return 'N/A';
+                              }
+                            })()}
+                          </dd>
                         </>
                       )}
                       {product.listingUrl && (
