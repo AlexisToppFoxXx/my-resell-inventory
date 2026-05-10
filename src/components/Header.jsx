@@ -2,7 +2,7 @@
 import React from 'react';
 import { getAuth, signOut } from 'firebase/auth';
 
-const Header = ({ setView, userId, currentView, onNavigate }) => {
+const Header = ({ setView, userId, currentView, onNavigate, isOnline = true }) => {
   const handleLogout = async () => {
     const auth = getAuth();
     try {
@@ -177,7 +177,15 @@ const Header = ({ setView, userId, currentView, onNavigate }) => {
       
       {userId && (
         <div className="bg-purple-700 text-center py-1 px-4">
-          <p className="text-xs text-white truncate">Logged in</p>
+          <div className="flex justify-between items-center">
+            <p className="text-xs text-white truncate">Logged in</p>
+            {!isOnline && (
+              <div className="flex items-center gap-2 ml-auto">
+                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                <span className="text-xs text-red-200">Offline</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </header>

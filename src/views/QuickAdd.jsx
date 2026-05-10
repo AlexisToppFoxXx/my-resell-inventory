@@ -52,6 +52,11 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
       photoLink: '',
       notes: '',
       purchaseDate: '',
+      length: '',
+      width: '',
+      height: '',
+      weight: '',
+      shippingCost: '',
       listDate: '',
       listingUrl: '',
       platform: '',
@@ -118,6 +123,11 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
       photoLink: '',
       notes: '',
       purchaseDate: '',
+      length: '',
+      width: '',
+      height: '',
+      weight: '',
+      shippingCost: '',
       listDate: '',
       listingUrl: '',
       platform: '',
@@ -133,6 +143,13 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
   const updateItem = (index, field, value) => {
     const newItems = [...items];
     newItems[index][field] = value;
+    // auto-calc selling fees if percentage provided and either sellPrice or autoFeePercent changed
+    const item = newItems[index];
+    const pct = parseFloat(item.autoFeePercent);
+    if (!isNaN(pct) && pct > 0) {
+      const sell = parseFloat(item.sellPrice) || 0;
+      item.sellingFees = (sell * (pct / 100)).toFixed(2);
+    }
     setItems(newItems);
   };
 
@@ -149,8 +166,9 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
     const sellPrice = parseFloat(item.sellPrice) || 0;
     const purchasePrice = parseFloat(item.purchasePrice) || 0;
     const sellingFees = parseFloat(item.sellingFees) || 0;
+    const shipping = parseFloat(item.shippingCost) || 0;
     if (sellPrice === 0) return 0;
-    return (sellPrice - purchasePrice - sellingFees);
+    return (sellPrice - purchasePrice - sellingFees - shipping);
   };
 
   const handleSaveAll = async () => {
@@ -160,6 +178,13 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
     const missingCreator = itemsToSave.find(item => !item.createdBy);
     if (missingCreator) {
       alert('❌ Please select "Created By" for all items before saving.');
+      return;
+    }
+    
+    // NEW: Validate that Platform requires List Date
+    const invalidPlatform = itemsToSave.find(item => item.platform.trim() && !item.listDate);
+    if (invalidPlatform) {
+      alert('❌ If you enter a "Platform", you must also set a "List Date".\n\nDon\'t fill in Platform until you\'ve actually listed the item!\n\nIf you haven\'t listed it yet, leave Platform blank and it will show in "Not Yet Listed" priority.');
       return;
     }
     
@@ -186,6 +211,11 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
           color: item.color || '',
           condition: item.condition || '',
           purchasePrice: parseFloat(item.purchasePrice) || 0,
+          length: parseFloat(item.length) || 0,
+          width: parseFloat(item.width) || 0,
+          height: parseFloat(item.height) || 0,
+          weight: parseFloat(item.weight) || 0,
+          shippingCost: parseFloat(item.shippingCost) || 0,
           listingPrice: parseFloat(item.listingPrice) || 0,
           msrp: parseFloat(item.msrp) || 0,
           compEbayPrice: parseFloat(item.compEbayPrice) || 0,
@@ -501,28 +531,26 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                     <option value="living-room">Living Room</option>
                     <option value="dining-room">Dining Room</option>
                     <option value="den">Den</option>
+                    <option value="sold">Sold</option>
+                    <option value="decided-to-keep">Decided to Keep</option>
+                    <option value="trash-broken">Trash/Broken</option>
                   </select>
                 </div>
 
-                {/* Existing Storage Location Dropdown */}
+                {/* FIXED: Specific Storage Location - TEXT INPUT, not dropdown */}
                 <div className="col-span-full">
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Specific Storage Location
                   </label>
-                  <select
+                  <input
+                    type="text"
+                    placeholder="e.g., Shelf A, Box 3, Bin 12, Garage North Wall"
                     value={item.location}
                     onChange={(e) => updateItem(index, 'location', e.target.value)}
                     className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  >
-                    <option value="">-- No Location --</option>
-                    {locations.map(loc => (
-                      <option key={loc.id} value={loc.locationName}>
-                        📍 {loc.locationName}
-                      </option>
-                    ))}
-                  </select>
+                  />
                   <p className="text-xs text-gray-500 mt-1">
-                    💡 Optional: Specific location marker created from Locations tab
+                    💡 Optional: Free text - describe exactly where this item is stored
                   </p>
                 </div>
 
@@ -746,12 +774,15 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                     )}
                   </div>
 
-                  {/* Platform */}
+                  {/* Platform - WITH NEW VALIDATION */}
                   <div className="md:col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       Platform
                       {item.listDate && !item.platform.trim() && (
                         <span className="ml-2 text-red-600 text-xs">* Required with List Date</span>
+                      )}
+                      {item.platform.trim() && !item.listDate && (
+                        <span className="ml-2 text-red-600 text-xs">* Requires List Date!</span>
                       )}
                     </label>
                     <input
@@ -760,29 +791,98 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                       value={item.platform}
                       onChange={(e) => updateItem(index, 'platform', e.target.value)}
                       className={`w-full border rounded-lg p-2 focus:outline-none focus:ring-2 ${
-                        item.listDate && !item.platform.trim()
+                        (item.listDate && !item.platform.trim()) || (item.platform.trim() && !item.listDate)
                           ? 'border-red-500 focus:ring-red-500'
                           : 'border-gray-300 focus:ring-purple-500'
                       }`}
                     />
+                    <p className="text-xs text-orange-600 mt-1 font-medium">
+                      ⚠️ Only fill this in AFTER you've actually listed the item!
+                    </p>
                   </div>
                 </div>
 
-                {/* NEW: Validation Warning Box */}
-                {item.listDate && !item.platform.trim() && (
+                {/* NEW: Validation Warning Box - Updated */}
+                {(item.listDate && !item.platform.trim()) || (item.platform.trim() && !item.listDate) ? (
                   <div className="mt-3 p-3 bg-red-50 border border-red-300 rounded-lg">
                     <p className="text-sm text-red-800">
-                      <strong>⚠️ Warning:</strong> You set a "List Date" but haven't entered a "Platform". 
-                      This item will show as "Listed" but won't actually be posted anywhere!
+                      <strong>⚠️ Warning:</strong> List Date and Platform must be filled in together!
                       <br />
                       <strong>Please either:</strong>
                     </p>
                     <ul className="text-sm text-red-700 mt-2 ml-4 list-disc">
-                      <li>Enter the platform where it's listed (e.g., "eBay", "Poshmark")</li>
-                      <li>Or clear the List Date to mark as "Not Yet Listed"</li>
+                      {item.platform.trim() && !item.listDate && (
+                        <li><strong>Set the List Date</strong> to when you actually listed it</li>
+                      )}
+                      {item.listDate && !item.platform.trim() && (
+                        <li><strong>Enter the platform</strong> where it's listed (e.g., "eBay", "Poshmark")</li>
+                      )}
+                      <li><strong>Or clear both fields</strong> if it's not listed yet (will show in "Not Yet Listed")</li>
                     </ul>
                   </div>
-                )}
+                ) : null}
+              </div>
+
+              {/* Dimensions & Shipping Section */}
+              <div className="mt-6 pt-6 border-t border-gray-200">
+                <h4 className="text-md font-semibold text-gray-800 mb-4">Dimensions & Shipping</h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Length</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="in"
+                      value={item.length}
+                      onChange={(e) => updateItem(index, 'length', e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Width</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="in"
+                      value={item.width}
+                      onChange={(e) => updateItem(index, 'width', e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Height</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="in"
+                      value={item.height}
+                      onChange={(e) => updateItem(index, 'height', e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Weight</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="lbs"
+                      value={item.weight}
+                      onChange={(e) => updateItem(index, 'weight', e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Shipping Cost</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={item.shippingCost}
+                      onChange={(e) => updateItem(index, 'shippingCost', e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                </div>
               </div>
 
               {/* Sold Information Section */}
@@ -836,6 +936,18 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                       className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
                     />
                   </div>
+                  {/* Auto fee % optional */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Auto Fee %</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="e.g. 15"
+                      value={item.autoFeePercent}
+                      onChange={(e) => updateItem(index, 'autoFeePercent', e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
 
                   {/* NEW: Selling Notes - Full Width */}
                   <div className="col-span-full">
@@ -858,7 +970,7 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                       ${profit.toFixed(2)}
                     </span>
                   </h5>
-                  <p className="text-xs text-gray-500 mt-1">(Sell Price - Purchase Price - Selling Fees)</p>
+                  <p className="text-xs text-gray-500 mt-1">(Sell Price - Purchase Price - Selling Fees - Shipping Cost)</p>
                 </div>
               </div>
 

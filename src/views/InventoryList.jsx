@@ -19,13 +19,56 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
   const [filterLocation, setFilterLocation] = useState('');
   const [filterCreator, setFilterCreator] = useState('');
   const [filterStatus, setFilterStatus] = useState(''); // all, available, sold
-  const [showNeedsAttention, setShowNeedsAttention] = useState(true);
-  const [showNotListed, setShowNotListed] = useState(false);
+  const [filterListing, setFilterListing] = useState(''); // '', 'listed', 'notListed'
+  const [filterPhotoStatus, setFilterPhotoStatus] = useState(''); // '', 'needs', 'has'
+  const [filterNeedsDimensions, setFilterNeedsDimensions] = useState(false);
   const [generatingQR, setGeneratingQR] = useState({}); // ADD THIS LINE - was missing!
-  const [showNotYetListed, setShowNotYetListed] = useState(true); // NEW: Separate control for Not Yet Listed
+  const [showNotYetListed, setShowNotYetListed] = useState(true); // keep top-priority not-listed section
+  const [showNeedsAttention, setShowNeedsAttention] = useState(true); // keep needs-attention toggle
   const [downloadFormat, setDownloadFormat] = useState('csv'); // NEW: Track download format
   const [searchError, setSearchError] = useState(null); // NEW: Track search errors
   const [downloadingPhoto, setDownloadingPhoto] = useState(null); // NEW: Track photo downloads
+
+  const handleStatClick = (stat) => {
+    // reset all existing filters first
+    clearFilters();
+    switch (stat) {
+      case 'total':
+        // already cleared
+        break;
+      case 'listed':
+        setFilterListing('listed');
+        setFilterStatus('available');
+        break;
+      case 'sold':
+        setFilterStatus('sold');
+        break;
+      case 'needsPhotos':
+        setFilterPhotoStatus('needs');
+        break;
+      case 'hasPhotos':
+        setFilterPhotoStatus('has');
+        break;
+      case 'notListed':
+        setFilterListing('notListed');
+        setFilterStatus('available');
+        break;
+      case 'ebay':
+        setFilterPlatform('eBay');
+        setFilterStatus('available');
+        break;
+      case 'facebook':
+        setFilterPlatform('Facebook');
+        setFilterStatus('available');
+        break;
+      case 'needsDimensions':
+        setFilterNeedsDimensions(true);
+        setFilterStatus('available');
+        break;
+      default:
+        break;
+    }
+  };
 
   // NEW: Items that are NOT LISTED (most important - top section)
   const notYetListedItems = inventory.filter(item => {
@@ -54,8 +97,9 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
     const sellPrice = parseFloat(item.sellPrice) || 0;
     const purchasePrice = parseFloat(item.purchasePrice) || 0;
     const sellingFees = parseFloat(item.sellingFees) || 0;
+    const shipping = parseFloat(item.shippingCost) || 0;
     if (sellPrice === 0) return null; // Not sold yet
-    return (sellPrice - purchasePrice - sellingFees).toFixed(2);
+    return (sellPrice - purchasePrice - sellingFees - shipping).toFixed(2);
   };
 
   const getConditionClass = (condition) => {
@@ -216,6 +260,25 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
     // Creator filter
     if (filterCreator && product.createdBy !== filterCreator) return false;
     
+    // Listing filter
+    if (filterListing === 'listed' && !(product.listDate || product.platform)) return false;
+    if (filterListing === 'notListed' && (product.listDate || product.platform)) return false;
+
+    // Photo status filter
+    if (filterPhotoStatus === 'needs') {
+      const hasAnyPhoto = product.photosTaken || product.photoLink;
+      if (hasAnyPhoto) return false;
+    }
+    if (filterPhotoStatus === 'has') {
+      const hasAnyPhoto = product.photosTaken || product.photoLink;
+      if (!hasAnyPhoto) return false;
+    }
+
+    // Needs dimensions/weight filter
+    if (filterNeedsDimensions) {
+      if (product.length && product.width && product.height && product.weight) return false;
+    }
+
     // Status filter
     if (filterStatus === 'available' && product.soldDate) return false;
     if (filterStatus === 'sold' && !product.soldDate) return false;
@@ -569,22 +632,7 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
   };
 
   // NEW: Count active filters
-  const activeFiltersCount = [filterCategory, filterPlatform, filterLocation, filterCreator, filterStatus].filter(Boolean).length;
-
-  // ADD THIS MISSING FUNCTION:
-  const handleShowNotListed = () => {
-    setFilterStatus('');
-    setFilterCategory('');
-    setFilterPlatform('');
-    setFilterLocation('');
-    setFilterCreator('');
-    setSearchQuery('');
-    setShowNotYetListed(true);
-    
-    setTimeout(() => {
-      document.querySelector('.not-yet-listed-section')?.scrollIntoView({ behavior: 'smooth' });
-    }, 100);
-  };
+  const activeFiltersCount = [filterCategory, filterPlatform, filterLocation, filterCreator, filterStatus, filterListing, filterPhotoStatus, filterNeedsDimensions ? 'dims' : ''].filter(Boolean).length;
 
   return (
     <div className="max-w-4xl mx-auto p-6">
@@ -717,8 +765,12 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
 
       {/* Inventory Stats */}
       <InventoryStats 
-        inventory={inventory} 
-        onShowNotListed={handleShowNotListed}
+        inventory={inventory}
+        onStatClick={handleStatClick}
+        onCategoryClick={(cat) => {
+          clearFilters();
+          setFilterCategory(cat);
+        }}
       />
 
       {/* Search Bar */}
@@ -858,6 +910,30 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
               <option value="sold">Sold</option>
             </select>
           </div>
+          {/* Listing Filter */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Listing</label>
+            <select
+              value={filterListing}
+              onChange={(e) => setFilterListing(e.target.value)}
+              className="w-full px-2 py-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+            >
+              <option value="">All</option>
+              <option value="listed">Listed</option>
+              <option value="notListed">Not Listed</option>
+            </select>
+          </div>
+          {/* Needs Dimensions/Weight */}
+          <div className="flex items-center gap-2 mt-2 md:mt-0">
+            <input
+              id="needs-dims"
+              type="checkbox"
+              checked={filterNeedsDimensions}
+              onChange={(e) => setFilterNeedsDimensions(e.target.checked)}
+              className="h-4 w-4 text-purple-600 border-gray-300 rounded"
+            />
+            <label htmlFor="needs-dims" className="text-xs text-gray-600">Needs dims/weight</label>
+          </div>
         </div>
 
         {/* Active Filters Display */}
@@ -891,6 +967,24 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
               <span className="inline-flex items-center gap-1 px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs">
                 Status: {filterStatus === 'available' ? 'Available' : 'Sold'}
                 <button onClick={() => setFilterStatus('')} className="hover:text-purple-900">×</button>
+              </span>
+            )}
+            {filterListing && (
+              <span className="inline-flex items-center gap-1 px-3 py-1 bg-red-100 text-red-700 rounded-full text-xs">
+                {filterListing === 'listed' ? 'Listed' : 'Not Listed'}
+                <button onClick={() => setFilterListing('')} className="hover:text-red-900">×</button>
+              </span>
+            )}
+            {filterPhotoStatus && (
+              <span className="inline-flex items-center gap-1 px-3 py-1 bg-orange-100 text-orange-700 rounded-full text-xs">
+                {filterPhotoStatus === 'needs' ? 'No Photos' : 'Has Photos'}
+                <button onClick={() => setFilterPhotoStatus('')} className="hover:text-orange-900">×</button>
+              </span>
+            )}
+            {filterNeedsDimensions && (
+              <span className="inline-flex items-center gap-1 px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-xs">
+                Needs dims/weight
+                <button onClick={() => setFilterNeedsDimensions(false)} className="hover:text-gray-900">×</button>
               </span>
             )}
           </div>
@@ -1023,11 +1117,25 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                         
                         {/* NEW: Description below product name */}
                         {product.description && (
-                          <p className="text-sm text-gray-600 mb-2 italic">
+                          <p className="text-sm text-gray-600 mb-1 italic">
                             {product.description}
                           </p>
                         )}
-                        
+                        {/* Purchase Date (collapsed) */}
+                        {product.purchaseDate && (
+                          <p className="text-xs text-gray-500 mb-1">
+                            Purchased: {product.purchaseDate}
+                          </p>
+                        )}
+                        {/* Photo indicators (collapsed) */}
+                        {product.photosTaken && (
+                          <p className="text-xs text-green-600 mb-1">📸 Photos taken</p>
+                        )}
+                        {product.photoLink && (
+                          <p className="text-xs text-indigo-600 mb-1">
+                            <a href={product.photoLink} target="_blank" rel="noopener noreferrer" className="underline">Photo link</a>
+                          </p>
+                        )}
                         {/* Quick Info Row */}
                         <div className="flex flex-wrap gap-3 text-sm text-gray-600">
                           {product.brand && (
@@ -1043,6 +1151,11 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                           {product.listingPrice && (
                             <span className="flex items-center gap-1 text-green-600 font-semibold">
                               ${parseFloat(product.listingPrice).toFixed(2)}
+                            </span>
+                          )}
+                          {product.shippingCost && (
+                            <span className="flex items-center gap-1 text-orange-600">
+                              <strong>Ship:</strong> ${parseFloat(product.shippingCost).toFixed(2)}
                             </span>
                           )}
                         </div>
@@ -1089,12 +1202,88 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                 {expandedItem === product.id && (
                   <div className="px-4 pb-4 border-t border-gray-200 bg-gray-50">
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm pt-4">
-                    {/* Full QR Code ID (for reference) */}
-                    <dt className="font-semibold text-gray-600">Full QR ID:</dt>
-                    <dd className="text-gray-900 font-mono text-xs break-all">
-                      {product.qrCodeId || product.id}
-                    </dd>
-                    
+                    {/* Core info and inventory timeline */}
+                    {product.purchaseDate && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Purchased:</dt>
+                        <dd className="text-gray-900">{product.purchaseDate}</dd>
+                      </>
+                    )}
+                    {product.locationType && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Location Type:</dt>
+                        <dd className="text-gray-900">{product.locationType}</dd>
+                      </>
+                    )}
+                    {product.location && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Location:</dt>
+                        <dd className="text-gray-900">{product.location}</dd>
+                      </>
+                    )}
+                    {product.platform && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Platform:</dt>
+                        <dd className="text-gray-900">{product.platform}</dd>
+                      </>
+                    )}
+                    {product.listingUrl && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Listing URL:</dt>
+                        <dd className="text-gray-900">
+                          <a href={product.listingUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">
+                            View</a>
+                        </dd>
+                      </>
+                    )}
+                    {/* days in inventory counter */}
+                    {product.purchaseDate && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Days in Inventory:</dt>
+                        <dd className="text-gray-900">
+                          {(() => {
+                            try {
+                              const start = new Date(product.purchaseDate);
+                              const end = product.soldDate ? new Date(product.soldDate) : new Date();
+                              const diff = Math.floor((end - start) / (1000 * 60 * 60 * 24));
+                              return diff;
+                            } catch (e) {
+                              return 'N/A';
+                            }
+                          })()}
+                        </dd>
+                      </>
+                    )}
+
+                    {/* Dimensions & weight */}
+                    {(product.length || product.width || product.height) && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Dimensions (L×W×H):</dt>
+                        <dd className="text-gray-900">
+                          {product.length || '-'} × {product.width || '-'} × {product.height || '-'}
+                        </dd>
+                      </>
+                    )}
+                    {product.weight && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Weight:</dt>
+                        <dd className="text-gray-900">{product.weight}</dd>
+                      </>
+                    )}
+                    {product.shippingCost && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Shipping Cost:</dt>
+                        <dd className="text-gray-900">${parseFloat(product.shippingCost).toFixed(2)}</dd>
+                      </>
+                    )}
+
+                    {/* Other meta fields */}
+                    {product.qrCodeId && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Full QR ID:</dt>
+                        <dd className="text-gray-900 font-mono text-xs break-all">{product.qrCodeId || product.id}</dd>
+                      </>
+                    )}
                     {product.product && (
                       <>
                         <dt className="font-semibold text-gray-600">Product:</dt>
@@ -1140,70 +1329,80 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                     {product.purchasePrice && (
                       <>
                         <dt className="font-semibold text-gray-600">Purchase Price:</dt>
-                        <dd className="text-gray-900">${product.purchasePrice}</dd>
+                        <dd className="text-gray-900">${parseFloat(product.purchasePrice).toFixed(2)}</dd>
                       </>
                     )}
+                    {product.listingPrice && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Listing Price:</dt>
+                        <dd className="text-gray-900">${parseFloat(product.listingPrice).toFixed(2)}</dd>
+                      </>
+                    )}
+
+                    {/* Price notes and photos moved earlier */}
                     {product.notes && (
                       <>
                         <dt className="font-semibold text-gray-600 col-span-2">Notes:</dt>
                         <dd className="text-gray-900 col-span-2">{product.notes}</dd>
                       </>
                     )}
+
                     {product.photosTaken && (
                       <>
-                        <dt className="font-semibold text-gray-600">Photos:</dt>
-                        <dd className="text-gray-900">✓ Taken</dd>
+                        <dt className="font-semibold text-gray-600">Photos Taken:</dt>
+                        <dd className="text-gray-900">✓</dd>
                       </>
                     )}
-                    
+
                     {product.photoLink && (
                       <>
                         <dt className="font-semibold text-gray-600">Photo Link:</dt>
-                        <dd className="text-gray-900">
-                          <a
-                            href={product.photoLink}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-800 underline"
-                          >
-                            View Photos
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 003-3v-1a9 9 0 01-9-9V6z" />
-                            </svg>
-                          </a>
+                        <dd className="text-gray-900 col-span-2">
+                          <a href={product.photoLink} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">
+                            View</a>
                         </dd>
                       </>
                     )}
+
+                    {/* Sold section always last */}
                     {product.soldDate && (
                       <>
                         <dt className="font-semibold text-gray-600">Sold Date:</dt>
                         <dd className="text-gray-900">{product.soldDate}</dd>
                       </>
                     )}
-                    
                     {product.sellPrice && (
                       <>
                         <dt className="font-semibold text-gray-600">Sell Price:</dt>
                         <dd className="text-gray-900">${parseFloat(product.sellPrice).toFixed(2)}</dd>
                       </>
                     )}
-                    
                     {product.sellingFees && (
                       <>
                         <dt className="font-semibold text-gray-600">Selling Fees:</dt>
                         <dd className="text-gray-900">${parseFloat(product.sellingFees).toFixed(2)}</dd>
                       </>
                     )}
-                    
-                    {/* NEW: Selling Notes */}
+                    {product.shippingCost && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Shipping Cost:</dt>
+                        <dd className="text-gray-900">${parseFloat(product.shippingCost).toFixed(2)}</dd>
+                      </>
+                    )}
                     {product.sellingNotes && (
                       <>
                         <dt className="font-semibold text-gray-600">Selling Notes:</dt>
                         <dd className="text-gray-900">{product.sellingNotes}</dd>
                       </>
                     )}
-                    
-                    {/* ...existing fields... */}
+                    {product.sellPrice && (
+                      <>
+                        <dt className="font-semibold text-gray-600">Profit:</dt>
+                        <dd className="text-gray-900 font-bold">
+                          ${calculateProfit(product)}
+                        </dd>
+                      </>
+                    )}
                   </dl>
 
                   {/* Photos Section */}
@@ -1223,7 +1422,7 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                           Download All
                         </button>
                       </div>
-                      
+
                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                         {product.photoUrls.map((url, photoIndex) => (
                           <div key={photoIndex} className="relative group">
@@ -1239,7 +1438,7 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                                 className="w-full h-32 object-cover rounded-lg border-2 border-gray-300 hover:border-blue-500 transition-colors cursor-pointer"
                               />
                             </a>
-                            
+
                             {/* Download button overlay */}
                             <button
                               onClick={() => handleDownloadPhoto(url, product.product, photoIndex)}
@@ -1258,14 +1457,14 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                                 </svg>
                               )}
                             </button>
-                            
+
                             <div className="mt-1 text-xs text-center text-gray-600">
                               Photo {photoIndex + 1}
                             </div>
                           </div>
                         ))}
                       </div>
-                      
+
                       <p className="text-xs text-gray-500 mt-3 text-center">
                         Click any photo to view full size • Hover to download individual photos
                       </p>

@@ -79,6 +79,7 @@ function App() {
   const [inventory, setInventory] = useState([]);
   const [currentProduct, setCurrentProduct] = useState(null);
   const [currentQrCodeId, setCurrentQrCodeId] = useState(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   const collectionPath = `artifacts/${myAppIdentifier}/users/${userId}/products`;
 
@@ -128,6 +129,20 @@ function App() {
     const timer = setTimeout(() => setGlobalError(null), 5000);
     return () => clearTimeout(timer);
   }, [globalError]);
+
+  // Handle online/offline status changes
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   // Handle QR code scans from URL (phone camera)
   useEffect(() => {
@@ -233,12 +248,8 @@ function App() {
         userId={userId}
         currentView={currentView}
         onNavigate={handleNavigate}
+        isOnline={isOnline}
       />
-
-      {/* DEBUG BANNER - Remove after fixing */}
-      <div className="bg-yellow-100 border-2 border-yellow-500 p-2 text-center text-sm">
-        🔍 DEBUG: View={view} | Items={inventory.length} | Auth={userId ? 'Yes' : 'No'}
-      </div>
 
       {globalError && (
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 mx-auto max-w-4xl mt-4 rounded">
@@ -287,7 +298,7 @@ function App() {
           />
         )}
 
-        {view === 'scan' && (
+        {view === 'scanner' && (
           <Scanner
             db={db}
             collectionPath={collectionPath}
