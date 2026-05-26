@@ -13,7 +13,7 @@ const Header = ({ setView, userId, currentView, onNavigate, isOnline = true }) =
   };
 
   return (
-    <header className="bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg">
+    <header className="relative bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg">
       <div className="container mx-auto p-4">
         <div className="flex justify-between items-center">
           <div
@@ -22,6 +22,11 @@ const Header = ({ setView, userId, currentView, onNavigate, isOnline = true }) =
           >
             <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H7a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg>
             <h1 className="text-2xl font-bold text-white">ResellFlow</h1>
+          </div>
+
+          {/* Version badge */}
+          <div className="absolute right-4 top-3">
+            <span className="text-xs bg-white text-indigo-700 font-semibold px-2 py-1 rounded shadow">v1.0.0</span>
           </div>
           
           {/* Main Navigation - Purple/Indigo theme */}
