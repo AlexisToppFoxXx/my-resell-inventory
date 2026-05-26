@@ -326,7 +326,7 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
         ? formData.externalSKU.slice(-10).toUpperCase() // Last 10 chars
         : getShortId(currentQrCodeId);
       
-      const productName = (formData.product || '').toUpperCase();
+      const productName = (formData.product || '').trim();
 
       // Generate QR code
       const dataUrl = await window.QRCode.toDataURL(qrUrl, {

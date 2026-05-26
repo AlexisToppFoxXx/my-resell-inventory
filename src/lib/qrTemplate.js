@@ -101,7 +101,7 @@ export function drawLabel(pdf, opts = {}) {
 
   if (opts.design === 'product') {
     const qrSize = 16;
-    const qrX = margin + 2;
+    const qrX = pageWidth - margin - qrSize - 2;
     const qrY = margin + 2;
     try {
       if (opts.qrDataUrl) pdf.addImage(opts.qrDataUrl, 'PNG', qrX, qrY, qrSize, qrSize);
@@ -109,50 +109,54 @@ export function drawLabel(pdf, opts = {}) {
       console.warn('addImage product', e);
     }
 
-    // Print short identifier under the QR (if provided)
-    if (opts.shortId) {
+    const shortId = (opts.shortId || '').toString().trim();
+    if (shortId) {
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(10);
+      pdf.setTextColor(0, 0, 0);
+      const shortWidth = qrSize + 2;
       const shortX = qrX + qrSize / 2;
-      const shortY = qrY + qrSize + 6;
-      try {
-        pdf.text(opts.shortId, shortX, shortY, { align: 'center' });
-      } catch (e) {
-        // fallback quietly
-      }
+      const shortY = qrY + qrSize + 4;
+      const shortLines = pdf.splitTextToSize(shortId, shortWidth);
+      pdf.text(shortLines, shortX, shortY, { align: 'center' });
     }
 
-    const gutter = 4;
-    const textX = qrX + qrSize + gutter;
-    const maxTextWidth = pageWidth - textX - margin - 2;
     const name = (opts.productName || '').toString().trim();
-    const availableHeight = pageHeight - 2 * margin - 4;
+    if (name) {
+      pdf.setFont('helvetica', 'bold');
+      pdf.setTextColor(0, 0, 0);
+      let fontSize = 22;
+      let lines = [];
+      let lineHeight = 0;
+      const maxTextWidth = qrX - margin - 6;
+      const maxTextHeight = pageHeight - margin * 2 - 8;
 
-    pdf.setFont('helvetica', 'bold');
-    pdf.setTextColor(0, 0, 0);
-    let fontSize = 18;
-    let lines = [];
-    let lineHeight = 0;
-    while (fontSize >= 8) {
-      pdf.setFontSize(fontSize);
-      lines = pdf.splitTextToSize(name, maxTextWidth);
-      lineHeight = fontSize * 1.2;
-      if (lines.length * lineHeight <= availableHeight) break;
-      fontSize -= 1;
+      while (fontSize >= 10) {
+        pdf.setFontSize(fontSize);
+        lines = pdf.splitTextToSize(name, maxTextWidth);
+        lineHeight = fontSize * 1.2;
+        if (lines.length * lineHeight <= maxTextHeight) break;
+        fontSize -= 1;
+      }
+
+      while (lines.length > 3 && fontSize > 10) {
+        fontSize -= 1;
+        pdf.setFontSize(fontSize);
+        lines = pdf.splitTextToSize(name, maxTextWidth);
+        lineHeight = fontSize * 1.2;
+      }
+
+      if (lines.length > 4) {
+        lines = lines.slice(0, 4);
+      }
+
+      const textX = margin + 4;
+      const textBlockHeight = lines.length * lineHeight;
+      const startY = margin + (maxTextHeight - textBlockHeight) / 2 + lineHeight;
+      lines.forEach((line, idx) => {
+        pdf.text(line, textX, startY + idx * lineHeight, { align: 'left' });
+      });
     }
-
-    if (lines.length > 4) {
-      lines = lines.slice(0, 4);
-    }
-
-    const startY = margin + 4;
-    lines.forEach((line, idx) => {
-      pdf.text(line, textX, startY + idx * lineHeight);
-    });
-
-    pdf.setDrawColor(200, 200, 200);
-    pdf.setLineWidth(0.3);
-    pdf.line(qrX + qrSize + gutter / 2, margin + 2, qrX + qrSize + gutter / 2, pageHeight - margin - 2);
 
     pdf.setFontSize(brandingFontSize);
     try {
@@ -160,13 +164,13 @@ export function drawLabel(pdf, opts = {}) {
     } catch (e) {
       pdf.setFont('helvetica', 'bold');
     }
-    const brX = pageWidth - margin - 2;
-    const brY = pageHeight - margin - 2;
+    const brandX = margin + 4;
+    const brandY = pageHeight - margin - 2;
     try {
-      pdf.text(branding, brX, brY, { align: 'right' });
+      pdf.text(branding, brandX, brandY, { align: 'left' });
     } catch (e) {
       pdf.setFont('helvetica', 'bold');
-      pdf.text(branding, brX, brY, { align: 'right' });
+      pdf.text(branding, brandX, brandY, { align: 'left' });
     }
     return;
   }

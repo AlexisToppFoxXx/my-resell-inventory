@@ -350,7 +350,7 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
       const qrCodeId = product.qrCodeId || product.id;
       const qrUrl = `https://resell-inventory-flow.web.app/scan/${qrCodeId}`;
       const shortId = getShortId(qrCodeId);
-      const productName = (product.product || '').toUpperCase();
+      const productName = (product.product || '').trim();
 
       // Generate product QR code
       const productQrDataUrl = await window.QRCode.toDataURL(qrUrl, {
@@ -416,7 +416,7 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
         const qrId = product.qrCodeId || product.id;
         const shortId = getShortId(qrId);
         const qrUrl = `https://resell-inventory-flow.web.app/scan/${qrId}`;
-        const productName = (product.product || '').toUpperCase();
+        const productName = (product.product || '').trim();
 
         const productQrDataUrl = await window.QRCode.toDataURL(qrUrl, {
           width: 400,

@@ -333,7 +333,7 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
 
       const qrUrl = `https://resell-inventory-flow.web.app/scan/${item.id}`;
       const shortId = getShortId(item.id);
-      const productName = (item.product || '').toUpperCase();
+      const productName = (item.product || '').trim();
 
       const dataUrl = await window.QRCode.toDataURL(qrUrl, {
         width: 600,
