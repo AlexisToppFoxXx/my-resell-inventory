@@ -3,6 +3,7 @@ import { collection, doc, setDoc, query, where, getDocs } from 'firebase/firesto
 // import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 // import { getAuth } from 'firebase/auth';
 import { jsPDF } from 'jspdf';
+import { drawLabel, PAGE_SIZE, registerCaveatFont } from '../lib/qrTemplate';
 
 function QuickAdd({ db, collectionPath, onComplete, setView }) {
   const [items, setItems] = useState(() => {
@@ -341,58 +342,17 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
         color: { dark: '#000000', light: '#FFFFFF' }
       });
 
-      const pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: [50.8, 76.2],
-        compress: true
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [PAGE_SIZE.width, PAGE_SIZE.height], compress: true });
+      await registerCaveatFont(pdf);
+      drawLabel(pdf, {
+        design: 'product',
+        qrDataUrl: dataUrl,
+        shortId: `...${shortId}`,
+        productName,
+        pageWidth: PAGE_SIZE.width,
+        pageHeight: PAGE_SIZE.height,
+        branding: '4TL'
       });
-
-      const pageWidth = 50.8;
-      const pageHeight = 76.2;
-      const qrSize = 45;
-      const qrX = (pageWidth - qrSize) / 2;
-      const qrY = 8;
-
-      // White background
-      pdf.setFillColor(255, 255, 255);
-      pdf.rect(0, 0, pageWidth, pageHeight, 'F');
-
-      // 4TL logo at top
-      pdf.setFontSize(16);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setTextColor(0, 0, 0);
-      pdf.text('4TL', pageWidth / 2, 5, { align: 'center' });
-
-      // QR code
-      pdf.addImage(dataUrl, 'PNG', qrX, qrY, qrSize, qrSize, undefined, 'FAST');
-
-      // LEFT side: SKU vertical
-      pdf.setFontSize(16);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setTextColor(0, 0, 0);
-      pdf.text(shortId, 3, pageHeight - 8, {
-        angle: 90
-      });
-
-      // RIGHT side: SKU vertical
-      pdf.setFontSize(16);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setTextColor(0, 0, 0);
-      pdf.text(shortId, pageWidth - 3, 13, {
-        angle: 270
-      });
-
-      // BOTTOM: Product name
-      if (productName) {
-        pdf.setFontSize(9);
-        pdf.setFont('helvetica', 'bold');
-        pdf.setTextColor(0, 0, 0);
-        pdf.text(productName, pageWidth / 2, pageHeight - 5, {
-          align: 'center',
-          maxWidth: pageWidth - 16
-        });
-      }
 
       const fileName = `QR_${item.product || 'Item'}_${shortId}.pdf`;
       pdf.save(fileName);

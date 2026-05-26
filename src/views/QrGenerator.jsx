@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { jsPDF } from 'jspdf';
 import { APP_CONFIG } from '../config';
+import { drawLabel, PAGE_SIZE, registerCaveatFont } from '../lib/qrTemplate';
 
 // Hook to load external script
 function useScript(src, globalName) {
@@ -118,62 +119,27 @@ const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCod
       
       console.log(`Valid codes: ${validCodes.length}/${qrCodes.length}`);
       
-      // Create PDF with 1.88" x 2.88" pages
-      const pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: [47.752, 73.152],
-        compress: true
-      });
+      // Create PDF using shared page size and drawLabel helper
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [PAGE_SIZE.width, PAGE_SIZE.height], compress: true });
+      await registerCaveatFont(pdf);
 
       for (let i = 0; i < validCodes.length; i++) {
         const code = validCodes[i];
+        if (i > 0) pdf.addPage([PAGE_SIZE.width, PAGE_SIZE.height]);
         const product = inventory.find(p => p.id === code.id);
-        const productName = product?.product || 'Unknown';
-        
-        if (i > 0) pdf.addPage([47.752, 73.152]);
-
-        const pageWidth = 47.752;
-        const pageHeight = 73.152;
-        const margin = 2.032;
-        const qrSize = pageWidth * 0.5; // much larger for reliable scanning
-
-        // Background
-        pdf.setFillColor(255,255,255);
-        pdf.rect(0,0,pageWidth,pageHeight,'F');
-        pdf.setLineWidth(0.5);
-        pdf.setDrawColor(0,0,0);
-        pdf.rect(margin, margin, pageWidth - 2*margin, pageHeight - 2*margin);
-
-        // Top center 4TL
-        const topCenterY = margin + (pageHeight * 0.06);
-        pdf.setFontSize(12); pdf.setFont('helvetica','bold');
-        try { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center', stroke: true }); } catch (e) { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center' }); }
-
-        // Centered product QR (below 4TL)
-        const qrX = (pageWidth - qrSize) / 2;
-        const qrY = topCenterY + 2;
-        try { pdf.addImage(code.dataUrl, 'PNG', qrX, qrY, qrSize, qrSize); } catch (err) { console.warn('Failed to render product QR', err); }
-
-        // Product name large and bold underneath QR
-        pdf.setFontSize(24); pdf.setFont('helvetica','bold');
-        const maxWidth = pageWidth - (2 * margin) - 4;
-        let nameLines = pdf.splitTextToSize((productName || '').toUpperCase(), maxWidth);
-        if (!nameLines || nameLines.length === 0 || nameLines.every(l => !String(l || '').trim())) {
-          nameLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
-        }
-        nameLines = nameLines.slice(0, 2);
-        const lineHeight = 10;
-        const startY = qrY + qrSize + 6;
-        nameLines.forEach((line, idx) => {
-          pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
+        drawLabel(pdf, {
+          design: 'product',
+          qrDataUrl: code.dataUrl,
+          shortId: `...${code.shortId}`,
+          productName: product?.product || '',
+          pageWidth: PAGE_SIZE.width,
+          pageHeight: PAGE_SIZE.height,
+          branding: '4TL'
         });
       }
 
       const filename = `QR-Labels-${new Date().toISOString().slice(0,10)}.pdf`;
       pdf.save(filename);
-      
-      console.log('✅ PDF generation complete!');
       alert(`✅ Generated ${validCodes.length} labels! Check your Downloads folder.`);
     } catch (error) {
       console.error('❌ PDF generation error:', error);
@@ -195,62 +161,26 @@ const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCod
 
       setGenerating(true);
 
-      const pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: [47.752, 73.152],
-        compress: true
-      });
-
-      const pageWidth = 47.752;
-      const pageHeight = 73.152;
-      const qrSize = pageWidth * 0.22;
-      const margin = 1.6; // safe border margin used below
-
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [PAGE_SIZE.width, PAGE_SIZE.height], compress: true });
+      await registerCaveatFont(pdf);
       for (let i = 0; i < quantity; i++) {
         const uuid = crypto.randomUUID();
         const qrUrl = `https://resell-inventory-flow.web.app/scan/${uuid}`;
-        const shortId = uuid.split('-').pop().substring(0, 5).toUpperCase();
-
         const dataUrl = await window.QRCode.toDataURL(qrUrl, {
           width: 600,
           margin: 2,
           errorCorrectionLevel: 'M',
           color: { dark: '#000000', light: '#FFFFFF' }
         });
-
-        if (i > 0) {
-          pdf.addPage([47.752, 73.152]);
-        }
-
-        // White background
-        pdf.setFillColor(255, 255, 255);
-        pdf.rect(0, 0, pageWidth, pageHeight, 'F');
-
-        // Draw border
-        pdf.setLineWidth(0.5);
-        pdf.setDrawColor(0,0,0);
-        pdf.rect(1.6, 1.6, pageWidth - 3.2, pageHeight - 3.2);
-
-        // Top center 4TL
-        const topCenterY = 1.6 + (pageHeight * 0.06);
-        pdf.setFontSize(12); pdf.setFont('helvetica','bold');
-        try { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center', stroke: true }); } catch(e) { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center' }); }
-
-        // Centered QR (product)
-        const qrX = (pageWidth - qrSize) / 2;
-        const qrY = topCenterY + 2;
-        pdf.addImage(dataUrl, 'PNG', qrX, qrY, qrSize, qrSize, undefined, 'FAST');
-
-        // Placeholder product name in large bold horizontal text
-        pdf.setFontSize(24); pdf.setFont('helvetica','bold');
-        const maxWidth = pageWidth - (2 * margin) - 4;
-        let placeholderLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
-        placeholderLines = placeholderLines.slice(0, 2);
-        const lineHeight = 10;
-        const startY = qrY + qrSize + 6;
-        placeholderLines.forEach((line, idx) => {
-          pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
+        if (i > 0) pdf.addPage([PAGE_SIZE.width, PAGE_SIZE.height]);
+        const shortId = uuid.split('-').pop().substring(0,5).toUpperCase();
+        drawLabel(pdf, {
+          design: 'bulk',
+          qrDataUrl: dataUrl,
+          shortId: `...${shortId}`,
+          pageWidth: PAGE_SIZE.width,
+          pageHeight: PAGE_SIZE.height,
+          branding: '4TL'
         });
       }
 

@@ -5,6 +5,7 @@ import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'fire
 import { getAuth } from 'firebase/auth';
 import { jsPDF } from 'jspdf';
 import { APP_CONFIG } from '../config';
+import { drawLabel, PAGE_SIZE, registerCaveatFont } from '../lib/qrTemplate';
 
 const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId, setView, setGlobalError }) => {
   const [formData, setFormData] = useState({
@@ -335,59 +336,20 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
         color: { dark: '#000000', light: '#FFFFFF' }
       });
 
-      // Create PDF with exact label size: 1.88" x 2.88" (47.752mm x 73.152mm)
-      const pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: [47.752, 73.152],
-        compress: true
-      });
-
-      const pageWidth = 47.752;
-      const pageHeight = 73.152;
-      const margin = 2.032; // 0.08 in in mm
-      // double size so QR scans reliably (about 50% of page width)
-      const qrSize = pageWidth * 0.5;
-
-      // Generate product QR (single QR only)
+      // Use shared helper for consistent rotated label size
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [PAGE_SIZE.width, PAGE_SIZE.height], compress: true });
+      await registerCaveatFont(pdf);
       const productQrDataUrl = await window.QRCode.toDataURL(qrUrl, { width: 600, margin: 1, errorCorrectionLevel: 'M' });
-
-      // White background
-      pdf.setFillColor(255, 255, 255);
-      pdf.rect(0, 0, pageWidth, pageHeight, 'F');
-
-      // Border
-      pdf.setLineWidth(0.5);
-      pdf.setDrawColor(0, 0, 0);
-      pdf.rect(margin, margin, pageWidth - (2 * margin), pageHeight - (2 * margin));
-
-      // Top center "4TL" (about 5-10% from top)
-      const topCenterY = margin + (pageHeight * 0.06);
-      pdf.setFontSize(12);
-      pdf.setFont('helvetica', 'bold');
-      try { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center', stroke: true }); } catch (e) { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center' }); }
-
-      // Centered product QR (below 4TL text)
-      const qrX = (pageWidth - qrSize) / 2;
-      const qrY = topCenterY + 2;
-      pdf.addImage(productQrDataUrl, 'PNG', qrX, qrY, qrSize, qrSize);
-
-      // Product name large and bold, placed underneath the QR
-      pdf.setFontSize(24);
-      pdf.setFont('helvetica', 'bold');
-      const maxWidth = pageWidth - (2 * margin) - 4;
-      let nameLines = pdf.splitTextToSize(productName || 'NAME SHOULD SHOW HERE', maxWidth);
-      if (!nameLines || nameLines.length === 0 || nameLines.every(l => !String(l || '').trim())) {
-        nameLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
-      }
-      nameLines = nameLines.slice(0, 2);
-      const lineHeight = 10; // for ~24pt text
-      const startY = qrY + qrSize + 6;
-      nameLines.forEach((line, idx) => {
-        pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
+      drawLabel(pdf, {
+        design: 'product',
+        qrDataUrl: productQrDataUrl,
+        shortId: `...${shortId}`,
+        productName: productName,
+        pageWidth: PAGE_SIZE.width,
+        pageHeight: PAGE_SIZE.height,
+        branding: '4TL'
       });
 
-      // Download PDF
       const fileName = `QR_${formData.product || 'Item'}_${shortId}.pdf`;
       pdf.save(fileName);
 

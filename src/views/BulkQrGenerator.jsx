@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { jsPDF } from 'jspdf';
+import { drawLabel, PAGE_SIZE, registerCaveatFont } from '../lib/qrTemplate';
 
 function useScript(src, globalName) {
   const [loaded, setLoaded] = useState(false);
@@ -76,71 +77,30 @@ function BulkQrGenerator({ setView, setGlobalError }) {
 
       console.log(`✅ All ${qty} QR codes generated! Creating PDF...`);
 
-      // Create PDF with 1.88" x 2.88" pages
+      // Create PDF with rotated label size (3" x 2" as landscape)
       const pdf = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
-        format: [47.752, 73.152],
+        format: [PAGE_SIZE.width, PAGE_SIZE.height],
         compress: true
       });
-
-      console.log('PDF object created');
+      await registerCaveatFont(pdf);
 
       for (let i = 0; i < qrCodes.length; i++) {
         const code = qrCodes[i];
-        console.log(`Adding page ${i + 1}/${qrCodes.length} for ${code.shortId}`);
-        
-        if (i > 0) {
-          pdf.addPage([47.752, 73.152]);
-        }
-
-        const pageWidth = 47.752;
-        const pageHeight = 73.152;
-        const margin = 2.032;
-        const qrSize = pageWidth * 0.5; // larger for scanning
-
-        // White background
-        pdf.setFillColor(255, 255, 255);
-        pdf.rect(0, 0, pageWidth, pageHeight, 'F');
-
-        // Border
-        pdf.setLineWidth(0.5);
-        pdf.setDrawColor(0,0,0);
-        pdf.rect(margin, margin, pageWidth - (2*margin), pageHeight - (2*margin));
-
-        // Top center 4TL
-        const topCenterY = margin + (pageHeight * 0.06);
-        pdf.setFontSize(12);
-        pdf.setFont('helvetica', 'bold');
-        try { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center', stroke: true }); } catch(e) { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center' }); }
-
-        // Centered QR (product)
-        const qrX = (pageWidth - qrSize) / 2;
-        const qrY = topCenterY + 2;
-        pdf.addImage(code.dataUrl, 'PNG', qrX, qrY, qrSize, qrSize, undefined, 'FAST');
-
-        // Label text (ID or name) large and bold beneath QR
-        pdf.setFontSize(24); pdf.setFont('helvetica','bold');
-        const maxWidth = pageWidth - (2 * margin) - 4;
-        const labelText = code.shortId || 'NAME SHOULD SHOW HERE';
-        let labelLines = pdf.splitTextToSize(labelText, maxWidth);
-        if (!labelLines || labelLines.length === 0 || labelLines.every(l => !String(l || '').trim())) {
-          labelLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
-        }
-        labelLines = labelLines.slice(0, 2);
-        const lineHeight = 10;
-        const startY = qrY + qrSize + 6;
-        labelLines.forEach((line, idx) => {
-          pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
+        if (i > 0) pdf.addPage([PAGE_SIZE.width, PAGE_SIZE.height]);
+        drawLabel(pdf, {
+          design: 'bulk',
+          qrDataUrl: code.dataUrl,
+          shortId: `...${code.shortId}`,
+          pageWidth: PAGE_SIZE.width,
+          pageHeight: PAGE_SIZE.height,
+          branding: '4TL'
         });
-
-        console.log(`✓ Text added for ${code.shortId}`);
       }
 
       const filename = `QR-Labels-${qty}-${Date.now()}.pdf`;
       pdf.save(filename);
-      
-      console.log('✅✅✅ PDF SAVED!', filename);
       alert(`✅ ${qty} labels downloaded!`);
       
     } catch (error) {
