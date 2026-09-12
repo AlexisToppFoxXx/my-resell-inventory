@@ -11,10 +11,16 @@ const SoldInventory = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
   // Calculate stats
   const totalProfit = soldItems.reduce((sum, item) => {
     const sellPrice = parseFloat(item.sellPrice) || 0;
-    const purchasePrice = parseFloat(item.purchasePrice) || 0;
+    let cost = parseFloat(item.purchasePrice) || 0;
+    if (item.applyVistaFees) {
+      cost = cost * 1.15 + 2;
+    }
     const sellingFees = parseFloat(item.sellingFees) || 0;
-    const shipping = parseFloat(item.shippingCost) || 0;
-    return sum + (sellPrice - purchasePrice - sellingFees - shipping);
+    const sellerShip = parseFloat(item.shippingCost) || 0;
+    const buyerShip = parseFloat(item.buyerShipping) || 0;
+    const pct = parseFloat(item.purchaseFeePercent) || 0;
+    const purchaseFee = item.applyPurchaseFee ? cost * (pct / 100) : 0;
+    return sum + (sellPrice + buyerShip - cost - sellingFees - sellerShip - purchaseFee);
   }, 0);
 
   const totalRevenue = soldItems.reduce((sum, item) => sum + (parseFloat(item.sellPrice) || 0), 0);
@@ -44,13 +50,33 @@ const SoldInventory = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
       case 'oldest-sold':
         return new Date(a.soldDate || 0) - new Date(b.soldDate || 0);
       case 'profit-high': {
-        const profitA = (parseFloat(a.sellPrice) || 0) - (parseFloat(a.purchasePrice) || 0) - (parseFloat(a.sellingFees) || 0);
-        const profitB = (parseFloat(b.sellPrice) || 0) - (parseFloat(b.purchasePrice) || 0) - (parseFloat(b.sellingFees) || 0);
+        const costA = (parseFloat(a.purchasePrice) || 0) * (a.applyVistaFees ? 1.15 : 1) + (a.applyVistaFees ? 2 : 0);
+        const costB = (parseFloat(b.purchasePrice) || 0) * (b.applyVistaFees ? 1.15 : 1) + (b.applyVistaFees ? 2 : 0);
+        const buyerA = parseFloat(a.buyerShipping) || 0;
+        const buyerB = parseFloat(b.buyerShipping) || 0;
+        const sellerA = parseFloat(a.shippingCost) || 0;
+        const sellerB = parseFloat(b.shippingCost) || 0;
+        const pctA = parseFloat(a.purchaseFeePercent) || 0;
+        const pctB = parseFloat(b.purchaseFeePercent) || 0;
+        const purchaseFeeA = a.applyPurchaseFee ? costA * (pctA / 100) : 0;
+        const purchaseFeeB = b.applyPurchaseFee ? costB * (pctB / 100) : 0;
+        const profitA = (parseFloat(a.sellPrice) || 0) + buyerA - costA - (parseFloat(a.sellingFees) || 0) - sellerA - purchaseFeeA;
+        const profitB = (parseFloat(b.sellPrice) || 0) + buyerB - costB - (parseFloat(b.sellingFees) || 0) - sellerB - purchaseFeeB;
         return profitB - profitA;
       }
       case 'profit-low': {
-        const profitA2 = (parseFloat(a.sellPrice) || 0) - (parseFloat(a.purchasePrice) || 0) - (parseFloat(a.sellingFees) || 0);
-        const profitB2 = (parseFloat(b.sellPrice) || 0) - (parseFloat(b.purchasePrice) || 0) - (parseFloat(b.sellingFees) || 0);
+        const costA2 = (parseFloat(a.purchasePrice) || 0) * (a.applyVistaFees ? 1.15 : 1) + (a.applyVistaFees ? 2 : 0);
+        const costB2 = (parseFloat(b.purchasePrice) || 0) * (b.applyVistaFees ? 1.15 : 1) + (b.applyVistaFees ? 2 : 0);
+        const buyerA2 = parseFloat(a.buyerShipping) || 0;
+        const buyerB2 = parseFloat(b.buyerShipping) || 0;
+        const sellerA2 = parseFloat(a.shippingCost) || 0;
+        const sellerB2 = parseFloat(b.shippingCost) || 0;
+        const pctA2 = parseFloat(a.purchaseFeePercent) || 0;
+        const pctB2 = parseFloat(b.purchaseFeePercent) || 0;
+        const purchaseFeeA2 = a.applyPurchaseFee ? costA2 * (pctA2 / 100) : 0;
+        const purchaseFeeB2 = b.applyPurchaseFee ? costB2 * (pctB2 / 100) : 0;
+        const profitA2 = (parseFloat(a.sellPrice) || 0) + buyerA2 - costA2 - (parseFloat(a.sellingFees) || 0) - sellerA2 - purchaseFeeA2;
+        const profitB2 = (parseFloat(b.sellPrice) || 0) + buyerB2 - costB2 - (parseFloat(b.sellingFees) || 0) - sellerB2 - purchaseFeeB2;
         return profitA2 - profitB2;
       }
       default:
@@ -60,10 +86,17 @@ const SoldInventory = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
 
   const calculateProfit = (item) => {
     const sellPrice = parseFloat(item.sellPrice) || 0;
-    const purchasePrice = parseFloat(item.purchasePrice) || 0;
+    let cost = parseFloat(item.purchasePrice) || 0;
+    if (item.applyVistaFees) {
+      cost = cost * 1.15 + 2;
+    }
     const sellingFees = parseFloat(item.sellingFees) || 0;
-    const shipping = parseFloat(item.shippingCost) || 0;
-    return (sellPrice - purchasePrice - sellingFees - shipping).toFixed(2);
+    const sellerShip = parseFloat(item.shippingCost) || 0;
+    const buyerShip = parseFloat(item.buyerShipping) || 0;
+    const pct = parseFloat(item.purchaseFeePercent) || 0;
+    const purchaseFee = item.applyPurchaseFee ? cost * (pct / 100) : 0;
+    if (sellPrice === 0) return '0.00';
+    return (sellPrice + buyerShip - cost - sellingFees - sellerShip - purchaseFee).toFixed(2);
   };
 
   const handleEdit = (product) => {
@@ -166,7 +199,13 @@ const SoldInventory = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                       </div>
                       <div className="flex gap-4 text-sm font-medium">
                         <span className="text-blue-600">Sold: ${parseFloat(product.sellPrice || 0).toFixed(2)}</span>
-                        <span className="text-gray-600">Cost: ${parseFloat(product.purchasePrice || 0).toFixed(2)}</span>
+                        <span className="text-gray-600">
+                          Cost: ${(() => {
+                            let c = parseFloat(product.purchasePrice || 0);
+                            if (product.applyVistaFees) c = c * 1.15 + 2;
+                            return c.toFixed(2);
+                          })()}
+                        </span>
                         <span className="text-orange-600">Fees: ${parseFloat(product.sellingFees || 0).toFixed(2)}</span>
                         <span className={`font-bold ${profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>Profit: ${profit}</span>
                       </div>

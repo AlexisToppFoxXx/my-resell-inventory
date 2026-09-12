@@ -25,27 +25,23 @@ const Scanner = ({ db, collectionPath, setCurrentQrCodeId, setView, setCurrentPr
     let qrCodeId = decodedText.trim();
     let isExternalSKU = false;
 
-    // Check if it's a URL
+    // if the scanned value looks like a URL, try to pull the last path segment
     if (qrCodeId.startsWith('http')) {
-      const match = qrCodeId.match(/\/scan\/([a-f0-9-]{36})/i);
-      if (match) {
-        // Our UUID format
-        qrCodeId = match[1];
-      } else {
-        // External URL - extract the path
-        const pathMatch = qrCodeId.match(/\/scan\/(.+)/);
-        if (pathMatch) {
-          qrCodeId = decodeURIComponent(pathMatch[1]);
-          isExternalSKU = true;
-        }
+      try {
+        const urlObj = new URL(qrCodeId);
+        const segments = urlObj.pathname.split('/').filter(Boolean);
+        const last = segments[segments.length - 1] || '';
+        qrCodeId = decodeURIComponent(last);
+      } catch (e) {
+        console.warn('[Scanner] URL parsing failed, falling back to regex', e);
+        const match = qrCodeId.match(/\/scan\/(.+?)(?:[\/?#]|$)/i); // eslint-disable-line no-useless-escape
+        if (match) qrCodeId = match[1];
       }
     }
 
-    // Check if it's a UUID
+    // determine if it's a UUID (our native format)
     const isUUID = /^[a-f0-9-]{36}$/i.test(qrCodeId);
-    
     if (!isUUID) {
-      // This is an external SKU (Vista, etc.)
       isExternalSKU = true;
     }
 

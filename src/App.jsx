@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp, getApps } from 'firebase/app';
 import { initializeAppCheck, ReCaptchaV3Provider } from 'firebase/app-check';
 import { 
@@ -13,8 +13,9 @@ import {
   browserLocalPersistence // NEW: Import persistence
 } from 'firebase/auth';
 import {
-  getFirestore, collection, query, onSnapshot, setLogLevel, doc, getDoc
+  getFirestore, collection, query, onSnapshot, setLogLevel, doc, getDoc, setDoc
 } from 'firebase/firestore';
+import { normalizePlatform, normalizePlatforms } from './utils';
 
 import { firebaseConfig, myAppIdentifier } from './firebaseConfig';
 
@@ -81,6 +82,9 @@ function App() {
   const [currentQrCodeId, setCurrentQrCodeId] = useState(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
+  // ref to make sure platform migration only runs once
+  const migratedRef = useRef(false);
+
   const collectionPath = `artifacts/${myAppIdentifier}/users/${userId}/products`;
 
   // Handle authentication - WITH PERSISTENCE
@@ -103,17 +107,60 @@ function App() {
   }, []);
 
   // Subscribe to inventory updates
+  // mirror inventory and perform one-time normalization of messy platform values
   useEffect(() => {
     if (!userId) return;
 
     const productsQuery = query(collection(db, collectionPath));
+
     const unsubscribe = onSnapshot(productsQuery, 
-      (snapshot) => {
+      async (snapshot) => {
         const products = [];
-        snapshot.forEach(doc => {
-          products.push({ ...doc.data(), id: doc.id });
+        const migrationPromises = [];
+
+        snapshot.forEach(docSnap => {
+          const data = docSnap.data();
+          // handle platform migration to array
+          let platforms = [];
+
+          if (Array.isArray(data.platforms)) {
+            // normalize each entry in existing array
+            platforms = normalizePlatforms(data.platforms);
+          } else if (data.platform) {
+            // legacy single string field -- convert to array
+            platforms = normalizePlatforms(data.platform);
+          }
+
+          // if migration necessary (either platforms array empty but string exists,
+          // or normalization changed values), write back
+          const needsUpdate = (() => {
+            if (!Array.isArray(data.platforms) && platforms.length > 0) return true;
+            if (Array.isArray(data.platforms)) {
+              const existing = normalizePlatforms(data.platforms);
+              return JSON.stringify(existing) !== JSON.stringify(platforms);
+            }
+            return false;
+          })();
+
+          if (needsUpdate) {
+            migrationPromises.push(
+              setDoc(doc(db, collectionPath, docSnap.id), { platforms }, { merge: true })
+            );
+          }
+
+          products.push({ ...data, id: docSnap.id, platforms });
         });
+
+        // update inventory state immediately for counting
         setInventory(products);
+
+        // run migrations but don't await before rendering
+        if (!migratedRef.current && migrationPromises.length > 0) {
+          migratedRef.current = true;
+          Promise.allSettled(migrationPromises).then(results => {
+            console.log('[App] Platform migration results', results);
+          }).catch(err => console.error('[App] migration error', err));
+        }
       },
       (error) => {
         console.error('Firestore error:', error);
@@ -149,56 +196,46 @@ function App() {
     if (!userId) return;
 
     const path = window.location.pathname;
-    const scanMatch = path.match(/\/scan\/([a-f0-9-]{36})/i);
-    
-    if (scanMatch) {
-      const qrCodeId = scanMatch[1];
-      console.log('[App] QR scanned from URL:', qrCodeId);
-      
-      const loadProduct = async () => {
-        try {
-          const docRef = doc(db, collectionPath, qrCodeId);
-          const docSnap = await getDoc(docRef);
-          
-          if (docSnap.exists()) {
-            console.log('[App] ✅ Loading existing product');
-            const productData = { ...docSnap.data(), id: docSnap.id };
-            console.log('[App] Product data:', productData);
-            setCurrentProduct(productData);
-          } else {
-            console.log('[App] ℹ️ New product (not in database)');
-            setCurrentProduct(null);
-          }
-          
-          setCurrentQrCodeId(qrCodeId);
-          setView('form');
-        } catch (error) {
-          console.error('[App] Error loading product:', error);
-          setGlobalError(`Error loading product: ${error.message}`);
+    // capture the first segment after /scan/ (stop at slash, ? or #)
+    const scanMatch = path.match(/\/scan\/([^/?#]+)/);
+    if (!scanMatch) return;
+
+    const rawValue = decodeURIComponent(scanMatch[1]);
+    console.log('[App] QR scanned from URL:', rawValue);
+
+    const loadProduct = async () => {
+      try {
+        // Try to load the value as a normal document id first
+        const docRef = doc(db, collectionPath, rawValue);
+        const docSnap = await getDoc(docRef);
+
+        if (docSnap.exists()) {
+          console.log('[App] ✅ Loading existing product');
+          const productData = { ...docSnap.data(), id: docSnap.id };
+          setCurrentProduct(productData);
+          setCurrentQrCodeId(rawValue);
+        } else {
+          // treat anything that isn’t in Firestore as an external SKU
+          console.log('[App] ℹ️ Value not found in database, assuming external SKU');
+          const newUid = crypto.randomUUID();
+          setCurrentQrCodeId(newUid);
+          setCurrentProduct({
+            itemType: 'inventory',
+            externalSKU: rawValue,
+            notes: `External QR Code: ${rawValue}`,
+            description: 'Scanned from external source (Vista Auction or other)'
+          });
         }
-      };
-      
-      loadProduct();
-      window.history.replaceState({}, '', '/');
-    } else {
-      // Check if it's an external QR code URL (Vista Auction, etc.)
-      const externalQRMatch = path.match(/\/scan\/(.+)/);
-      if (externalQRMatch) {
-        console.log('[App] External QR code detected from URL');
-        const externalValue = decodeURIComponent(externalQRMatch[1]);
-        const newQrCodeId = crypto.randomUUID();
-        
-        setCurrentQrCodeId(newQrCodeId);
-        setCurrentProduct({
-          itemType: 'inventory',
-          externalSKU: externalValue, // NEW: Store external QR value
-          notes: `External QR Code: ${externalValue}`,
-          description: 'Scanned from external source (Vista Auction or other)'
-        });
+
         setView('form');
-        window.history.replaceState({}, '', '/');
+      } catch (error) {
+        console.error('[App] Error loading product:', error);
+        setGlobalError(`Error loading product: ${error.message}`);
       }
-    }
+    };
+
+    loadProduct();
+    window.history.replaceState({}, '', '/');
   }, [userId, db, collectionPath]);
 
   // FIXED: Only show spinner during initial load
@@ -315,6 +352,9 @@ function App() {
             currentProduct={currentProduct}
             currentQrCodeId={currentQrCodeId}
             setView={setView}
+            setGlobalError={setGlobalError}
+            // update inventory locally when a delete occurs so counters update immediately
+            onItemDeleted={(id) => setInventory(prev => prev.filter(p => p.id !== id))}
           />
         )}
 

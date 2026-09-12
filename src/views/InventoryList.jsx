@@ -2,8 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import { doc, deleteDoc } from 'firebase/firestore';
 import { jsPDF } from 'jspdf';
+import QRCode from 'qrcode';
 import InventoryStats from '../components/InventoryStats';
 import { APP_CONFIG } from '../config';
+import { makeQrUrl, PLATFORMS } from '../utils';
 
 const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCodeId, db, collectionPath, setGlobalError }) => {
   const [expandedItem, setExpandedItem] = useState(null);
@@ -15,16 +17,17 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
   
   // NEW: Filter states
   const [filterCategory, setFilterCategory] = useState('');
-  const [filterPlatform, setFilterPlatform] = useState('');
+  const [filterPlatforms, setFilterPlatforms] = useState([]); // now an array
   const [filterLocation, setFilterLocation] = useState('');
   const [filterCreator, setFilterCreator] = useState('');
   const [filterStatus, setFilterStatus] = useState(''); // all, available, sold
+  const [activeStat, setActiveStat] = useState('');
   const [filterListing, setFilterListing] = useState(''); // '', 'listed', 'notListed'
   const [filterPhotoStatus, setFilterPhotoStatus] = useState(''); // '', 'needs', 'has'
   const [filterNeedsDimensions, setFilterNeedsDimensions] = useState(false);
   const [generatingQR, setGeneratingQR] = useState({}); // ADD THIS LINE - was missing!
-  const [showNotYetListed, setShowNotYetListed] = useState(true); // keep top-priority not-listed section
-  const [showNeedsAttention, setShowNeedsAttention] = useState(true); // keep needs-attention toggle
+  const [showNotYetListed, setShowNotYetListed] = useState(false); // start collapsed
+  const [showNeedsAttention, setShowNeedsAttention] = useState(false); // start collapsed
   const [downloadFormat, setDownloadFormat] = useState('csv'); // NEW: Track download format
   const [searchError, setSearchError] = useState(null); // NEW: Track search errors
   const [downloadingPhoto, setDownloadingPhoto] = useState(null); // NEW: Track photo downloads
@@ -32,16 +35,19 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
   const handleStatClick = (stat) => {
     // reset all existing filters first
     clearFilters();
+    setActiveStat(stat);
     switch (stat) {
       case 'total':
         // already cleared
+        setActiveStat('');
         break;
       case 'listed':
         setFilterListing('listed');
         setFilterStatus('available');
         break;
       case 'sold':
-        setFilterStatus('sold');
+        // Navigate to sold inventory view (sold items are never shown in main list)
+        setView('sold');
         break;
       case 'needsPhotos':
         setFilterPhotoStatus('needs');
@@ -54,11 +60,11 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
         setFilterStatus('available');
         break;
       case 'ebay':
-        setFilterPlatform('eBay');
+        setFilterPlatforms(['eBay']);
         setFilterStatus('available');
         break;
       case 'facebook':
-        setFilterPlatform('Facebook');
+        setFilterPlatforms(['His Facebook Marketplace','Her Facebook Marketplace']);
         setFilterStatus('available');
         break;
       case 'needsDimensions':
@@ -72,11 +78,13 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
 
   // NEW: Items that are NOT LISTED (most important - top section)
   const notYetListedItems = inventory.filter(item => {
+    if (item.soldDate) return false;
     return !item.listDate && !item.platform;
   });
 
   // Items that need attention (but ARE listed)
   const needsAttentionItems = inventory.filter(item => {
+    if (item.soldDate) return false;
     // Don't include items that aren't listed (they're in the section above)
     if (!item.listDate && !item.platform) return false;
     
@@ -95,11 +103,15 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
 
   const calculateProfit = (item) => {
     const sellPrice = parseFloat(item.sellPrice) || 0;
-    const purchasePrice = parseFloat(item.purchasePrice) || 0;
+    const buyerShipping = parseFloat(item.buyerShipping) || 0;
+    let purchasePrice = parseFloat(item.purchasePrice) || 0;
+    if (item.applyVistaFees) {
+      purchasePrice = purchasePrice * 1.15 + 2;
+    }
     const sellingFees = parseFloat(item.sellingFees) || 0;
     const shipping = parseFloat(item.shippingCost) || 0;
     if (sellPrice === 0) return null; // Not sold yet
-    return (sellPrice - purchasePrice - sellingFees - shipping).toFixed(2);
+    return (sellPrice + buyerShipping - purchasePrice - sellingFees - shipping).toFixed(2);
   };
 
   const getConditionClass = (condition) => {
@@ -237,7 +249,9 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
         product.color,
         product.size,
         product.category,
-        product.platform,
+        // join platforms for free‑text search
+        (product.platforms || []).join(', '),
+        product.platform, // keep legacy string just in case
         product.createdBy,
         product.location,
         shortSku,
@@ -251,8 +265,13 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
     // Category filter
     if (filterCategory && product.category !== filterCategory) return false;
     
-    // Platform filter
-    if (filterPlatform && product.platform !== filterPlatform) return false;
+    // Platform filter array
+    if (filterPlatforms && filterPlatforms.length > 0) {
+      const pfs = filterPlatforms.map(p => p.toLowerCase());
+      const prodPlats = (product.platforms || []).map(p => p.toLowerCase());
+      const hasMatch = pfs.some(fp => prodPlats.includes(fp));
+      if (!hasMatch) return false;
+    }
     
     // Location filter
     if (filterLocation && product.location !== filterLocation) return false;
@@ -296,11 +315,18 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
   // Sort filtered products
   const sortedProducts = [...filteredProducts].sort((a, b) => {
     switch (sortBy) {
-      case 'newest':
-        return new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0);
+      case 'newest': {
+        // pick the most recent available date among purchase/list/created
+        const dateA = new Date(a.purchaseDate || a.listDate || a.createdAt || a.updatedAt || 0);
+        const dateB = new Date(b.purchaseDate || b.listDate || b.createdAt || b.updatedAt || 0);
+        return dateB - dateA;
+      }
       
-      case 'oldest':
-        return new Date(a.createdAt || a.updatedAt || 0) - new Date(b.createdAt || b.updatedAt || 0);
+      case 'oldest': {
+        const dateA2 = new Date(a.purchaseDate || a.listDate || a.createdAt || a.updatedAt || 0);
+        const dateB2 = new Date(b.purchaseDate || b.listDate || b.createdAt || b.updatedAt || 0);
+        return dateA2 - dateB2;
+      }
       
       case 'name-asc':
         return (a.product || '').localeCompare(b.product || '');
@@ -319,40 +345,32 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
       
       case 'platform':
         return (a.platform || '').localeCompare(b.platform || '');
-      
+      case 'purchase-newest':
+        return new Date(b.purchaseDate || 0) - new Date(a.purchaseDate || 0);
+      case 'purchase-oldest':
+        return new Date(a.purchaseDate || 0) - new Date(b.purchaseDate || 0);
+      case 'list-newest':
+        return new Date(b.listDate || 0) - new Date(a.listDate || 0);
+      case 'list-oldest':
+        return new Date(a.listDate || 0) - new Date(b.listDate || 0);
       default:
         return 0;
     }
   });
 
-  // NEW: Load QR Code library
-  useEffect(() => {
-    if (!window.QRCode) {
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js';
-      script.async = true;
-      document.body.appendChild(script);
-    }
-  }, []);
 
   // Generate and download QR label PDF
   const generateQRLabel = async (product) => {
     setGeneratingQR(prev => ({ ...prev, [product.id]: true }));
 
     try {
-      if (!window.QRCode) {
-        alert('QR Code library is loading, please try again in a moment.');
-        setGeneratingQR(prev => ({ ...prev, [product.id]: false }));
-        return;
-      }
-
       const qrCodeId = product.qrCodeId || product.id;
-      const qrUrl = `https://resell-inventory-flow.web.app/scan/${qrCodeId}`;
+      const qrUrl = makeQrUrl(qrCodeId);
       const shortId = getShortId(qrCodeId);
       const productName = (product.product || '').toUpperCase();
 
       // Generate product QR code
-      const productQrDataUrl = await window.QRCode.toDataURL(qrUrl, {
+      const productQrDataUrl = await QRCode.toDataURL(qrUrl, {
         width: 400,
         margin: 1,
         errorCorrectionLevel: 'M',
@@ -361,54 +379,78 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
 
 
 
+      const pageWidth = 77.98;
+      const pageHeight = 52;
+      const margin = 1;
+      const qrSize = 7;
+      const spacing = 1.5;
+      const logoFontSize = 18;
+      const uuidFontSize = 12;
+      const productNameMaxFont = 18;
+      const productNameMinFont = 16;
+      const uuid = qrCodeId;
+
       const pdf = new jsPDF({
-        orientation: 'portrait',
+        orientation: 'landscape',
         unit: 'mm',
-        format: [47.752, 73.152], // 1.88" x 2.88"
+        format: [pageWidth, pageHeight],
         compress: true
       });
 
-      const pageWidth = 47.752;
-      const pageHeight = 73.152;
-      const margin = 2.032; // 0.08in (2.032mm) safe margin
-      // make QR much larger so phones can scan reliably
-      const qrSize = pageWidth * 0.5;
-
-      // White background
-      pdf.setFillColor(255, 255, 255);
-      pdf.rect(0, 0, pageWidth, pageHeight, 'F');
-
-      // BLACK BORDER
+      // Border only (no fill so label color shows through)
       pdf.setLineWidth(0.5);
       pdf.setDrawColor(0, 0, 0);
-      pdf.rect(margin, margin, pageWidth - (2*margin), pageHeight - (2*margin));
+      pdf.rect(margin, margin, pageWidth - 2 * margin, pageHeight - 2 * margin);
 
-      // Top center "4TL"
-      pdf.setFontSize(12);
+      // 4TL logo (top-left)
       pdf.setFont('helvetica', 'bold');
-      pdf.setTextColor(0, 0, 0);
-      const topCenterY = margin + (pageHeight * 0.06);
-      try { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center', stroke: true }); } catch (e) { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center' }); }
+      pdf.setFontSize(logoFontSize);
+      try {
+        pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left', stroke: true });
+      } catch (e) {
+        pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left' });
+      }
 
-      // Centered product QR (below 4TL)
-      const qrX = (pageWidth - qrSize) / 2;
-      const qrY = topCenterY + 2;
+      // UUID (last 5 digits) top-right
+      pdf.setFontSize(uuidFontSize);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(shortId, pageWidth - margin, margin + (uuidFontSize * 0.35), { align: 'right' });
+
+      // Full UUID shown on attached product label for tracking
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      const fullUuidLines = pdf.splitTextToSize(uuid, pageWidth - 2 * margin - 8);
+      const fullUuidY = margin + (uuidFontSize * 0.35) + 4;
+      pdf.text(fullUuidLines, pageWidth - margin, fullUuidY, { align: 'right' });
+
+      // Place QR on left side (vertically centered)
+      const qrX = margin;
+      const qrY = (pageHeight - qrSize) / 2;
       pdf.addImage(productQrDataUrl, 'PNG', qrX, qrY, qrSize, qrSize);
 
-      // Product name large and bold underneath QR
-      pdf.setFontSize(24);
+      // Product name to the right of the QR
+      const nameX = qrX + qrSize + spacing;
+      const nameMaxWidth = pageWidth - margin - nameX;
+
+      let productFontSize = productNameMaxFont;
       pdf.setFont('helvetica', 'bold');
-      const maxWidth = pageWidth - (2 * margin) - 4;
-      let nameLines = pdf.splitTextToSize(productName || 'NAME SHOULD SHOW HERE', maxWidth);
-      if (!nameLines || nameLines.length === 0 || nameLines.every(l => !String(l || '').trim())) {
-        nameLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
+      while (productFontSize >= productNameMinFont) {
+        pdf.setFontSize(productFontSize);
+        if (pdf.getTextWidth(productName) <= nameMaxWidth) break;
+        productFontSize -= 1;
       }
-      nameLines = nameLines.slice(0, 2);
-      const lineHeight = 10;
-      const startY = qrY + qrSize + 6;
-      nameLines.forEach((line, idx) => {
-        pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
-      });
+
+      let displayName = productName;
+      pdf.setFontSize(productFontSize);
+      if (pdf.getTextWidth(displayName) > nameMaxWidth) {
+        while (displayName.length > 0 && pdf.getTextWidth(displayName + '...') > nameMaxWidth) {
+          displayName = displayName.slice(0, -1);
+        }
+        displayName = displayName + '...';
+      }
+
+      const nameY = qrY + (productFontSize * 0.35);
+      pdf.text(displayName, nameX, nameY, { align: 'left' });
 
       const fileName = `QR_${product.product || 'Item'}_${shortId}.pdf`;
       pdf.save(fileName);
@@ -430,11 +472,6 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
     setIsPrinting(true);
 
     try {
-      if (!window.QRCode) {
-        alert('QR Code library is loading, please try again in a moment.');
-        setIsPrinting(false);
-        return;
-      }
 
       const selectedProducts = inventory.filter(p => selectedItems.has(p.id));
       
@@ -444,73 +481,90 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
         return;
       }
 
+      const pageWidth = 77.98;
+      const pageHeight = 52;
+      const margin = 1;
+      const qrSize = 7;
+      const spacing = 1.5;
+      const logoFontSize = 18;
+      const uuidFontSize = 12;
+      const productNameMaxFont = 18;
+      const productNameMinFont = 16;
+
       const pdf = new jsPDF({
-        orientation: 'portrait',
+        orientation: 'landscape',
         unit: 'mm',
-        format: [47.752, 73.152], // 1.88" x 2.88"
+        format: [pageWidth, pageHeight],
         compress: true
       });
-
-      const pageWidth = 47.752;
-      const pageHeight = 73.152;
-      const margin = 2.032;
-      const qrSize = pageWidth * 0.5; // larger QR for scanning
 
       for (let i = 0; i < selectedProducts.length; i++) {
         const product = selectedProducts[i];
         const qrId = product.qrCodeId || product.id;
-        const qrUrl = `https://resell-inventory-flow.web.app/scan/${qrId}`;
+        const qrUrl = makeQrUrl(qrId);
         const shortId = getShortId(qrId);
+        const uuid = qrId;
         const productName = (product.product || '').toUpperCase();
 
-        // Generate product QR code
-        const productQrDataUrl = await window.QRCode.toDataURL(qrUrl, {
-          width: 400,
+        const productQrDataUrl = await QRCode.toDataURL(qrUrl, {
+          width: 600,
           margin: 1,
           errorCorrectionLevel: 'M',
           color: { dark: '#000000', light: '#FFFFFF' }
         });
 
         if (i > 0) {
-          pdf.addPage([47.752, 73.152]);
+          pdf.addPage([pageWidth, pageHeight]);
         }
 
-        // White background
-        pdf.setFillColor(255, 255, 255);
-        pdf.rect(0, 0, pageWidth, pageHeight, 'F');
-
-        // BLACK BORDER
         pdf.setLineWidth(0.5);
         pdf.setDrawColor(0, 0, 0);
-        pdf.rect(margin, margin, pageWidth - (2*margin), pageHeight - (2*margin));
+        pdf.rect(margin, margin, pageWidth - 2 * margin, pageHeight - 2 * margin);
 
-        // Top center "4TL"
-        pdf.setFontSize(12);
         pdf.setFont('helvetica', 'bold');
-        pdf.setTextColor(0, 0, 0);
-        const topCenterY = margin + (pageHeight * 0.06);
-        try { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center', stroke: true }); } catch (e) { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center' }); }
+        pdf.setFontSize(logoFontSize);
+        try {
+          pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left', stroke: true });
+        } catch (e) {
+          pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left' });
+        }
 
-        // Centered product QR (below 4TL)
-        const qrX = (pageWidth - qrSize) / 2;
-        const qrY = topCenterY + 2;
+        pdf.setFontSize(uuidFontSize);
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(shortId, pageWidth - margin, margin + (uuidFontSize * 0.35), { align: 'right' });
+
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8);
+        const fullUuidLines = pdf.splitTextToSize(uuid, pageWidth - 2 * margin - 8);
+        const fullUuidY = margin + (uuidFontSize * 0.35) + 4;
+        pdf.text(fullUuidLines, pageWidth - margin, fullUuidY, { align: 'right' });
+
+        const qrX = margin;
+        const qrY = (pageHeight - qrSize) / 2;
         pdf.addImage(productQrDataUrl, 'PNG', qrX, qrY, qrSize, qrSize);
 
-        // Product name large and bold under QR
-        pdf.setFontSize(24);
+        const nameX = qrX + qrSize + spacing;
+        const nameMaxWidth = pageWidth - margin - nameX;
+
+        let productFontSize = productNameMaxFont;
         pdf.setFont('helvetica', 'bold');
-        const maxWidth = pageWidth - (2 * margin) - 4;
-        let nameLines = pdf.splitTextToSize((productName || '').toUpperCase(), maxWidth);
-        if (!nameLines || nameLines.length === 0 || nameLines.every(l => !String(l || '').trim())) {
-          nameLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
+        while (productFontSize >= productNameMinFont) {
+          pdf.setFontSize(productFontSize);
+          if (pdf.getTextWidth(productName) <= nameMaxWidth) break;
+          productFontSize -= 1;
         }
-        nameLines = nameLines.slice(0, 2);
-          nameLines.forEach((line, idx) => {
-            const lineHeight = 10;
-            const startY = qrY + qrSize + 6;
-        });
 
+        let displayName = productName;
+        pdf.setFontSize(productFontSize);
+        if (pdf.getTextWidth(displayName) > nameMaxWidth) {
+          while (displayName.length > 0 && pdf.getTextWidth(displayName + '...') > nameMaxWidth) {
+            displayName = displayName.slice(0, -1);
+          }
+          displayName = displayName + '...';
+        }
 
+        const nameY = qrY + (productFontSize * 0.35);
+        pdf.text(displayName, nameX, nameY, { align: 'left' });
       }
 
       const fileName = `QR_Bulk_${selectedProducts.length}_labels_${Date.now()}.pdf`;
@@ -526,87 +580,93 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
     }
   };
 
-  // NEW: Print 5 labels for a single item
+  // Print one label for a single item
   const handlePrintSingleItem = async (product) => {
     try {
       setIsPrinting(true);
 
-      if (!window.QRCode) {
-        alert('QR Code library is loading. Please try again.');
-        setIsPrinting(false);
-        return;
-      }
-
-      const pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: [47.752, 73.152],
-        compress: true
-      });
-
-      const pageWidth = 47.752;
-      const pageHeight = 73.152;
+      const pageWidth = 77.98;
+      const pageHeight = 52;
+      const margin = 1;
+      const qrSize = 7;
+      const spacing = 1.5;
+      const logoFontSize = 18;
+      const uuidFontSize = 12;
+      const productNameMaxFont = 18;
+      const productNameMinFont = 16;
       const qrId = product.qrCodeId || product.id;
-      const productName = product.product || 'Unknown';
-      const shortId = qrId.split('-').pop().substring(0, 5).toUpperCase();
-      const margin = 2.032;
-      const qrSize = pageWidth * 0.5; // make product QR much larger
+      const uuidShort = qrId.split('-').pop().substring(0, 5).toUpperCase();
+      const uuid = qrId;
+      const productName = (product.product || 'Unknown').toUpperCase();
 
       // Generate product QR code once
-      const qrUrl = `https://resell-inventory-flow.web.app/scan/${qrId}`;
-      const productQrDataUrl = await window.QRCode.toDataURL(qrUrl, {
-        width: 400,
+      const qrUrl = makeQrUrl(qrId);
+      const productQrDataUrl = await QRCode.toDataURL(qrUrl, {
+        width: 600,
         margin: 1,
         errorCorrectionLevel: 'M',
         color: { dark: '#000000', light: '#FFFFFF' }
       });
 
+      const pdf = new jsPDF({
+        orientation: 'landscape',
+        unit: 'mm',
+        format: [pageWidth, pageHeight],
+        compress: true
+      });
 
+      pdf.setLineWidth(0.5);
+      pdf.setDrawColor(0, 0, 0);
+      pdf.rect(margin, margin, pageWidth - 2 * margin, pageHeight - 2 * margin);
 
-      // Generate 3 labels with same QR codes
-      for (let labelNum = 0; labelNum < 3; labelNum++) {
-        if (labelNum > 0) pdf.addPage();
-
-        // White background
-        pdf.setFillColor(255, 255, 255);
-        pdf.rect(0, 0, pageWidth, pageHeight, 'F');
-
-        // BLACK BORDER
-        pdf.setLineWidth(0.5);
-        pdf.setDrawColor(0, 0, 0);
-        pdf.rect(margin, margin, pageWidth - (2*margin), pageHeight - (2*margin));
-
-        // Top center "4TL"
-        pdf.setFontSize(12);
-        pdf.setFont('helvetica', 'bold');
-        pdf.setTextColor(0, 0, 0);
-        const topCenterY = margin + (pageHeight * 0.06);
-        try { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center', stroke: true }); } catch (e) { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center' }); }
-
-        // Centered product QR (below 4TL)
-        const qrX = (pageWidth - qrSize) / 2;
-        const qrY = topCenterY + 2;
-        pdf.addImage(productQrDataUrl, 'PNG', qrX, qrY, qrSize, qrSize);
-
-        // Product name large and bold under QR
-        pdf.setFontSize(24);
-        pdf.setFont('helvetica', 'bold');
-        const maxWidth = pageWidth - (2 * margin) - 4;
-        let nameLines = pdf.splitTextToSize((productName || '').toUpperCase(), maxWidth);
-        if (!nameLines || nameLines.length === 0 || nameLines.every(l => !String(l || '').trim())) {
-          nameLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
-        }
-        nameLines = nameLines.slice(0, 2);
-        const lineHeight = 10;
-        const startY = qrY + qrSize + 6;
-        nameLines.forEach((line, idx) => {
-          pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
-        });
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(logoFontSize);
+      try {
+        pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left', stroke: true });
+      } catch (e) {
+        pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left' });
       }
 
-      const filename = `${productName}-Labels-${new Date().toISOString().slice(0,10)}.pdf`;
+      pdf.setFontSize(uuidFontSize);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(uuidShort, pageWidth - margin, margin + (uuidFontSize * 0.35), { align: 'right' });
+
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      const fullUuidLines = pdf.splitTextToSize(uuid, pageWidth - 2 * margin - 8);
+      const fullUuidY = margin + (uuidFontSize * 0.35) + 4;
+      pdf.text(fullUuidLines, pageWidth - margin, fullUuidY, { align: 'right' });
+
+      const qrX = margin;
+      const qrY = (pageHeight - qrSize) / 2;
+      pdf.addImage(productQrDataUrl, 'PNG', qrX, qrY, qrSize, qrSize);
+
+      const nameX = qrX + qrSize + spacing;
+      const nameMaxWidth = pageWidth - margin - nameX;
+
+      let productFontSize = productNameMaxFont;
+      pdf.setFont('helvetica', 'bold');
+      while (productFontSize >= productNameMinFont) {
+        pdf.setFontSize(productFontSize);
+        if (pdf.getTextWidth(productName) <= nameMaxWidth) break;
+        productFontSize -= 1;
+      }
+
+      let displayName = productName;
+      pdf.setFontSize(productFontSize);
+      if (pdf.getTextWidth(displayName) > nameMaxWidth) {
+        while (displayName.length > 0 && pdf.getTextWidth(displayName + '...') > nameMaxWidth) {
+          displayName = displayName.slice(0, -1);
+        }
+        displayName = displayName + '...';
+      }
+
+      const nameY = qrY + (productFontSize * 0.35);
+      pdf.text(displayName, nameX, nameY, { align: 'left' });
+
+      const filename = `${productName}-Label-${new Date().toISOString().slice(0,10)}.pdf`;
       pdf.save(filename);
-      alert(`✅ Generated 3 labels for "${productName}"!`);
+      alert(`✅ Generated 1 label for "${productName}"!`);
     } catch (error) {
       console.error('Error printing labels:', error);
       alert(`Error: ${error.message}`);
@@ -617,22 +677,37 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
 
   // NEW: Get unique values for filter dropdowns
   const uniqueCategories = [...new Set(inventory.map(p => p.category).filter(Boolean))];
-  const uniquePlatforms = [...new Set(inventory.map(p => p.platform).filter(Boolean))];
+  const uniquePlatforms = [...new Set(inventory.flatMap(p => (p.platforms || []).filter(Boolean)))];
   const uniqueLocations = [...new Set(inventory.map(p => p.location).filter(Boolean))];
   const uniqueCreators = [...new Set(inventory.map(p => p.createdBy).filter(Boolean))];
 
   // NEW: Clear all filters
   const clearFilters = () => {
     setFilterCategory('');
-    setFilterPlatform('');
+    setFilterPlatforms([]);
     setFilterLocation('');
     setFilterCreator('');
     setFilterStatus('');
+    setFilterListing('');
+    setFilterPhotoStatus('');
+    setFilterNeedsDimensions(false);
     setSearchQuery('');
+    setShowNotYetListed(true);
+    setShowNeedsAttention(true);
+    setActiveStat('');
   };
 
   // NEW: Count active filters
-  const activeFiltersCount = [filterCategory, filterPlatform, filterLocation, filterCreator, filterStatus, filterListing, filterPhotoStatus, filterNeedsDimensions ? 'dims' : ''].filter(Boolean).length;
+  const activeFiltersCount = [
+    filterCategory,
+    ...(filterPlatforms || []).map(p => p),
+    filterLocation,
+    filterCreator,
+    filterStatus,
+    filterListing,
+    filterPhotoStatus,
+    filterNeedsDimensions ? 'dims' : ''
+  ].filter(Boolean).length;
 
   return (
     <div className="max-w-4xl mx-auto p-6">
@@ -766,6 +841,7 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
       {/* Inventory Stats */}
       <InventoryStats 
         inventory={inventory}
+        activeStat={activeStat}
         onStatClick={handleStatClick}
         onCategoryClick={(cat) => {
           clearFilters();
@@ -788,7 +864,7 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
           />
           {searchQuery && (
             <button
-              onClick={() => setSearchQuery('')}
+              onClick={() => { clearFilters(); }}
               className="absolute right-4 top-4 text-gray-400 hover:text-gray-600 transition-colors"
               title="Clear search"
             >
@@ -855,16 +931,25 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
           {/* Platform Filter */}
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Platform</label>
-            <select
-              value={filterPlatform}
-              onChange={(e) => setFilterPlatform(e.target.value)}
-              className="w-full px-2 py-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-            >
-              <option value="">All Platforms</option>
-              {uniquePlatforms.map(plat => (
-                <option key={plat} value={plat}>{plat}</option>
+            <div className="flex flex-wrap gap-2">
+              {PLATFORMS.map(plat => (
+                <label key={plat} className="inline-flex items-center text-sm">
+                  <input
+                    type="checkbox"
+                    className="mr-1 h-4 w-4 text-purple-600 border-gray-300 rounded"
+                    checked={filterPlatforms.includes(plat)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setFilterPlatforms([...filterPlatforms, plat]);
+                      } else {
+                        setFilterPlatforms(filterPlatforms.filter(p => p !== plat));
+                      }
+                    }}
+                  />
+                  {plat}
+                </label>
               ))}
-            </select>
+            </div>
           </div>
 
           {/* Location Filter */}
@@ -907,7 +992,6 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
             >
               <option value="">All Items</option>
               <option value="available">Available</option>
-              <option value="sold">Sold</option>
             </select>
           </div>
           {/* Listing Filter */}
@@ -945,12 +1029,12 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                 <button onClick={() => setFilterCategory('')} className="hover:text-purple-900">×</button>
               </span>
             )}
-            {filterPlatform && (
-              <span className="inline-flex items-center gap-1 px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs">
-                Platform: {filterPlatform}
-                <button onClick={() => setFilterPlatform('')} className="hover:text-purple-900">×</button>
+            {filterPlatforms && filterPlatforms.length > 0 && filterPlatforms.map(p => (
+              <span key={p} className="inline-flex items-center gap-1 px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs">
+                {p}
+                <button onClick={() => setFilterPlatforms(filterPlatforms.filter(x => x !== p))} className="hover:text-purple-900">×</button>
               </span>
-            )}
+            ))}
             {filterLocation && (
               <span className="inline-flex items-center gap-1 px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs">
                 Location: {filterLocation}
@@ -1008,6 +1092,10 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
             >
               <option value="newest">Newest First</option>
               <option value="oldest">Oldest First</option>
+              <option value="purchase-newest">Purchase Date ↑</option>
+              <option value="purchase-oldest">Purchase Date ↓</option>
+              <option value="list-newest">Listing Date ↑</option>
+              <option value="list-oldest">Listing Date ↓</option>
               <option value="name-asc">Name (A-Z)</option>
               <option value="name-desc">Name (Z-A)</option>
               <option value="price-high">Price (High-Low)</option>
@@ -1072,7 +1160,7 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
           <p className="text-gray-500 text-lg mb-2">No items match your search</p>
           <p className="text-gray-400 text-sm">Try searching for: product name, SKU (e.g., "A3F2D"), location, or category</p>
           <button
-            onClick={() => setSearchQuery('')}
+            onClick={() => { clearFilters(); }}
             className="mt-4 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
           >
             Clear Search
@@ -1127,6 +1215,9 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                             Purchased: {product.purchaseDate}
                           </p>
                         )}
+                        {product.isAuction && (
+                          <p className="text-xs text-red-600 font-semibold mb-1">🏁 Auction</p>
+                        )}
                         {/* Photo indicators (collapsed) */}
                         {product.photosTaken && (
                           <p className="text-xs text-green-600 mb-1">📸 Photos taken</p>
@@ -1153,9 +1244,14 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                               ${parseFloat(product.listingPrice).toFixed(2)}
                             </span>
                           )}
-                          {product.shippingCost && (
+                          {(product.shippingCost || product.buyerShipping) && (
                             <span className="flex items-center gap-1 text-orange-600">
-                              <strong>Ship:</strong> ${parseFloat(product.shippingCost).toFixed(2)}
+                              {product.shippingCost && (
+                                <>Seller Ship: ${parseFloat(product.shippingCost).toFixed(2)}</>
+                              )}
+                              {product.buyerShipping && (
+                                <>Buyer Ship: ${parseFloat(product.buyerShipping).toFixed(2)}</>
+                              )}
                             </span>
                           )}
                         </div>
@@ -1198,9 +1294,8 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                   </div>
                 </div>
 
-                {/* Expanded Details */}
-                {expandedItem === product.id && (
-                  <div className="px-4 pb-4 border-t border-gray-200 bg-gray-50">
+                {/* Expanded Details container with smooth animation */}
+                <div className={`px-4 pb-4 border-t border-gray-200 bg-gray-50 overflow-hidden transition-all duration-300 ${expandedItem === product.id ? 'max-h-96' : 'max-h-0'}`}>
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm pt-4">
                     {/* Core info and inventory timeline */}
                     {product.purchaseDate && (
@@ -1270,10 +1365,20 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                         <dd className="text-gray-900">{product.weight}</dd>
                       </>
                     )}
-                    {product.shippingCost && (
+                    {(product.shippingCost || product.buyerShipping) && (
                       <>
-                        <dt className="font-semibold text-gray-600">Shipping Cost:</dt>
-                        <dd className="text-gray-900">${parseFloat(product.shippingCost).toFixed(2)}</dd>
+                        {product.shippingCost && (
+                          <>
+                            <dt className="font-semibold text-gray-600">Seller Shipping Cost:</dt>
+                            <dd className="text-gray-900">${parseFloat(product.shippingCost).toFixed(2)}</dd>
+                          </>
+                        )}
+                        {product.buyerShipping && (
+                          <>
+                            <dt className="font-semibold text-gray-600">Buyer Shipping Received:</dt>
+                            <dd className="text-gray-900">${parseFloat(product.buyerShipping).toFixed(2)}</dd>
+                          </>
+                        )}
                       </>
                     )}
 
@@ -1471,7 +1576,6 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
                     </div>
                   )}
                 </div>
-                )}
               </div>
             );
           })}

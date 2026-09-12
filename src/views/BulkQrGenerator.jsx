@@ -1,31 +1,13 @@
 import { useState, useEffect } from 'react';
+import { makeQrUrl } from '../utils';
 import { jsPDF } from 'jspdf';
+import QRCode from 'qrcode';
 
-function useScript(src, globalName) {
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    if (window[globalName]) {
-      setLoaded(true);
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = src;
-    script.async = true;
-    script.onload = () => setLoaded(true);
-    document.body.appendChild(script);
-    return () => {
-      if (script.parentNode) script.parentNode.removeChild(script);
-    };
-  }, [src, globalName]);
-  return loaded;
-}
 
 function BulkQrGenerator({ setView, setGlobalError }) {
-  const qrLibLoaded = useScript('https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js', 'QRCode');
   const [quantity, setQuantity] = useState('');
   const [generating, setGenerating] = useState(false);
 
-  console.log('🔵🔵🔵 BulkQrGenerator NEW VERSION loaded! QR lib:', qrLibLoaded);
 
   // Get last 5 characters of UUID (after last dash)
   const getShortId = (uuid) => {
@@ -47,10 +29,7 @@ function BulkQrGenerator({ setView, setGlobalError }) {
     console.log(`✅ Starting generation of ${qty} QR codes...`);
 
     try {
-      if (!window.QRCode || !window.QRCode.toDataURL) {
-        throw new Error('QR Code library not loaded');
-      }
-      console.log('✓ QRCode library available');
+      // QRCode library imported above; proceed
 
       // Generate UUIDs and QR codes
       const qrCodes = [];
@@ -61,9 +40,9 @@ function BulkQrGenerator({ setView, setGlobalError }) {
         console.log(`Generating QR ${i + 1}/${qty}: ${shortId}`);
         
         // Generate QR code with URL instead of just UUID
-        const qrUrl = `https://resell-inventory-flow.web.app/scan/${uuid}`;
+        const qrUrl = makeQrUrl(uuid);
         
-        const dataUrl = await window.QRCode.toDataURL(qrUrl, {
+        const dataUrl = await QRCode.toDataURL(qrUrl, {
           width: 600,
           margin: 2,
           errorCorrectionLevel: 'M',
@@ -151,9 +130,6 @@ function BulkQrGenerator({ setView, setGlobalError }) {
     }
   };
 
-  if (!qrLibLoaded) {
-    return <div className="flex justify-center items-center p-8"><div className="text-gray-600">Loading...</div></div>;
-  }
 
   return (
     <div className="max-w-2xl mx-auto">

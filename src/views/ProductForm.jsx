@@ -4,9 +4,11 @@ import { doc, setDoc, deleteDoc, collection, query, where, getDocs } from 'fireb
 import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
 import { jsPDF } from 'jspdf';
+import QRCode from 'qrcode';
 import { APP_CONFIG } from '../config';
+import { normalizePlatform, PLATFORMS, makeQrUrl } from '../utils';
 
-const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId, setView, setGlobalError }) => {
+const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId, setView, setGlobalError, onItemDeleted }) => {
   const [formData, setFormData] = useState({
     itemType: 'inventory', // NEW: Default to inventory
     product: '',
@@ -29,17 +31,23 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
     width: '',
     height: '',
     weight: '',
-    shippingCost: '',
+    shippingCost: '',          // seller‑paid shipping cost
+    buyerShipping: '',         // NEW: buyer‑paid shipping revenue
     autoFeePercent: '',
+    applyVistaFees: false, // NEW: Vista fee toggle
+    isAuction: false,      // NEW: Auction listing indicator
     listDate: '',
     listingUrl: '', // NEW
-    platform: '',
+    platforms: [],            // NEW: replace single platform string
     soldDate: '',
     sellPrice: '',
     sellingFees: '',
     sellingNotes: '', // NEW: Notes about sale
     category: 'Clothing',
+    categoryOther: '',        // NEW: when user selects Other
     externalSKU: '', // NEW: Store external SKU
+    applyPurchaseFee: false,  // NEW: toggle for purchase fee
+    purchaseFeePercent: ''    // NEW: percent value
   });
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -65,8 +73,7 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
   }, [db, collectionPath]);
 
   useEffect(() => {
-    console.log('[ProductForm] useEffect triggered - currentProduct:', currentProduct, 'currentQrCodeId:', currentQrCodeId);
-    
+    // only depend on the product object itself; avoid re-running when QR id flips
     if (currentProduct) {
       console.log('[ProductForm] Loading existing product data');
       setFormData({
@@ -88,15 +95,21 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
         weight: currentProduct.weight || '',
         shippingCost: currentProduct.shippingCost || '',
         autoFeePercent: currentProduct.autoFeePercent || '',
+        applyVistaFees: currentProduct.applyVistaFees || false,
+        isAuction: currentProduct.isAuction || false,
         listDate: currentProduct.listDate || '',
         listingUrl: currentProduct.listingUrl || '', // NEW: Load URL
-        platform: currentProduct.platform || '',
+        platforms: currentProduct.platforms || (currentProduct.platform ? [normalizePlatform(currentProduct.platform)] : []),
         soldDate: currentProduct.soldDate || '', // FIX: Don't auto-fill, keep exactly what's in DB
         sellPrice: currentProduct.sellPrice || '',
         sellingFees: currentProduct.sellingFees || '',
         sellingNotes: currentProduct.sellingNotes || '', // NEW: Load selling notes
         category: currentProduct.category || 'Clothing',
+        categoryOther: currentProduct.categoryOther || '',
         externalSKU: currentProduct.externalSKU || '', // NEW: Load external SKU
+        buyerShipping: currentProduct.buyerShipping || '',
+        applyPurchaseFee: currentProduct.applyPurchaseFee || false,
+        purchaseFeePercent: currentProduct.purchaseFeePercent || '',
       });
     } else {
       // New product
@@ -111,10 +124,15 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
         brand: '', 
         type: '', size: '', color: '', condition: '', notes: '',
         purchasePrice: '', listingPrice: '', photosTaken: false,
-        purchaseDate: '', listDate: '', platform: '',
+        purchaseDate: '', listDate: '',
+        shippingCost: '', buyerShipping: '', autoFeePercent: '',
+        applyVistaFees: false, isAuction: false,
+        platforms: [],
         soldDate: '', sellPrice: '', sellingFees: '',
         sellingNotes: '', // NEW
-        category: 'Clothing',
+        length: '', width: '', height: '', weight: '',
+        applyPurchaseFee: false, purchaseFeePercent: '',
+        category: 'Clothing', categoryOther: '',
       });
     }
   }, [currentProduct, currentQrCodeId]);
@@ -176,7 +194,7 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
         ...prev,
         [name]: type === 'checkbox' ? checked : value
       };
-      // optional auto-fee calculation
+      // optional auto-fee calculation for selling fees
       const pct = parseFloat(updated.autoFeePercent);
       if (!isNaN(pct) && pct > 0) {
         const sell = parseFloat(updated.sellPrice) || 0;
@@ -186,12 +204,27 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
     });
   };
 
+  const togglePlatform = (plat) => {
+    setFormData(prev => {
+      const current = prev.platforms || [];
+      if (current.includes(plat)) {
+        return { ...prev, platforms: current.filter(p => p !== plat) };
+      } else {
+        return { ...prev, platforms: [...current, plat] };
+      }
+    });
+  };
+
   const profit = (() => {
     const sellPrice = parseFloat(formData.sellPrice) || 0;
     const purchasePrice = parseFloat(formData.purchasePrice) || 0;
     const sellingFees = parseFloat(formData.sellingFees) || 0;
+    const sellerShip = parseFloat(formData.shippingCost) || 0;
+    const buyerShip = parseFloat(formData.buyerShipping) || 0;
+    const feePct = parseFloat(formData.purchaseFeePercent) || 0;
+    const purchaseFee = formData.applyPurchaseFee ? (purchasePrice * (feePct / 100)) : 0;
     if (sellPrice === 0) return 0;
-    return (sellPrice - purchasePrice - sellingFees);
+    return (sellPrice + buyerShip - purchasePrice - sellingFees - sellerShip - purchaseFee);
   })();
 
   const handleSubmit = async (e) => {
@@ -207,15 +240,23 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
       return;
     }
 
-    // NEW: Validate that Platform requires List Date
-    if (formData.platform.trim() && !formData.listDate) {
-      alert('❌ If you enter a "Platform", you must also set a "List Date".\n\nDon\'t fill in Platform until you\'ve actually listed the item!\n\nIf you haven\'t listed it yet, leave Platform blank and it will show in "Not Yet Listed" priority.');
+    // NEW: Validate that selecting any platform requires a list date
+    if (formData.platforms && formData.platforms.length > 0 && !formData.listDate) {
+      alert(
+        '❌ If you select one or more platforms, you must also set a "List Date".\n\nDon\'t choose platforms until you\'ve actually listed the item!'
+      );
       return;
     }
 
-    // Existing: List Date requires Platform
-    if (formData.listDate && !formData.platform.trim()) {
-      alert('❌ If you set a "List Date", you must also enter a "Platform" (e.g., eBay, Poshmark).\n\nList Date without Platform means the item isn\'t actually listed yet!');
+    // Existing: List Date requires at least one platform
+    if (formData.listDate && (!formData.platforms || formData.platforms.length === 0)) {
+      alert('❌ If you set a "List Date", you must also choose at least one platform.');
+      return;
+    }
+
+    // New: Listing price required for non-auction items if platform is specified
+    if (formData.platforms && formData.platforms.length > 0 && !formData.isAuction && !(parseFloat(formData.listingPrice) > 0)) {
+      alert('❌ For non‑auction listings you must enter a listing price (or mark as auction).');
       return;
     }
 
@@ -233,12 +274,32 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
       size: formData.size || '', color: formData.color || '',
       condition: formData.condition || '', notes: formData.notes || '',
       purchasePrice: parseFloat(formData.purchasePrice) || 0,
+      // shipping fields: seller cost and buyer-paid revenue
+      shippingCost: parseFloat(formData.shippingCost) || 0,
+      buyerShipping: parseFloat(formData.buyerShipping) || 0,
       length: parseFloat(formData.length) || 0,
       width: parseFloat(formData.width) || 0,
       height: parseFloat(formData.height) || 0,
       weight: parseFloat(formData.weight) || 0,
-      shippingCost: parseFloat(formData.shippingCost) || 0,
+      autoFeePercent: formData.autoFeePercent || '',
+      applyVistaFees: formData.applyVistaFees,
+      isAuction: formData.isAuction,
+      listDate: formData.listDate || '',
+      listingUrl: formData.listingUrl || '',
+      listingPrice: parseFloat(formData.listingPrice) || 0,
+      platforms: formData.platforms || [],
+      platform: (formData.platforms || []).join(', '),
+      purchaseDate: formData.purchaseDate || '',
+      photosTaken: formData.photosTaken,
+      photoLink: formData.photoLink || '',
+      soldDate: formData.soldDate || '',
+      sellPrice: parseFloat(formData.sellPrice) || 0,
+      sellingFees: parseFloat(formData.sellingFees) || 0,
       sellingNotes: formData.sellingNotes || '',
+      category: formData.category === 'Other' ? formData.categoryOther || '' : formData.category || '',
+      externalSKU: formData.externalSKU || '',
+      applyPurchaseFee: formData.applyPurchaseFee,
+      purchaseFeePercent: formData.purchaseFeePercent || '',
     };
 
     try {
@@ -281,6 +342,7 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
     try {
       const docRef = doc(db, collectionPath, currentQrCodeId);
       await deleteDoc(docRef);
+      if (onItemDeleted) onItemDeleted(currentQrCodeId);
       setView('list');
     } catch (err) {
       console.error("Error deleting product:", err);
@@ -290,15 +352,6 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
     }
   };
 
-  // Load QR Code library
-  useEffect(() => {
-    if (!window.QRCode) {
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js';
-      script.async = true;
-      document.body.appendChild(script);
-    }
-  }, []);
 
   const getShortId = (uuid) => {
     if (!uuid) return '';
@@ -310,85 +363,100 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
     setGeneratingQR(true);
 
     try {
-      if (!window.QRCode) {
-        alert('QR Code library is loading, please try again.');
-        setGeneratingQR(false);
-        return;
-      }
-
       // Use external SKU if available, otherwise use our UUID
+      const uuid = currentQrCodeId || formData.externalSKU || '';
       const displaySKU = formData.externalSKU || currentQrCodeId;
-      const qrUrl = `https://resell-inventory-flow.web.app/scan/${displaySKU}`;
-      
-      // FIXED: Get LAST 10 characters instead of first 10
-      const shortId = formData.externalSKU 
-        ? formData.externalSKU.slice(-10).toUpperCase() // Last 10 chars
-        : getShortId(currentQrCodeId);
+      const qrUrl = makeQrUrl(displaySKU);
       
       const productName = (formData.product || '').toUpperCase();
 
       // Generate QR code
-      const dataUrl = await window.QRCode.toDataURL(qrUrl, {
+      const dataUrl = await QRCode.toDataURL(qrUrl, {
         width: 600,
         margin: 2,
         errorCorrectionLevel: 'M',
         color: { dark: '#000000', light: '#FFFFFF' }
       });
 
-      // Create PDF with exact label size: 1.88" x 2.88" (47.752mm x 73.152mm)
+      // Create PDF with exact label size: 77.98mm x 52mm (landscape)
+      const pageWidth = 77.98;
+      const pageHeight = 52;
+      const margin = 1; // 1mm margin
+      const qrSize = 7; // 7mm QR code
+      const spacing = 1.5; // space between QR and product name
+      const logoFontSize = 18;
+      const uuidFontSize = 12;
+      const productNameMaxFont = 18;
+      const productNameMinFont = 16;
+
+      const uuidShort = (uuid || '').replace(/-/g, '').slice(-5).toUpperCase();
+
       const pdf = new jsPDF({
-        orientation: 'portrait',
+        orientation: 'landscape',
         unit: 'mm',
-        format: [47.752, 73.152],
+        format: [pageWidth, pageHeight],
         compress: true
       });
 
-      const pageWidth = 47.752;
-      const pageHeight = 73.152;
-      const margin = 2.032; // 0.08 in in mm
-      // double size so QR scans reliably (about 50% of page width)
-      const qrSize = pageWidth * 0.5;
-
-      // Generate product QR (single QR only)
-      const productQrDataUrl = await window.QRCode.toDataURL(qrUrl, { width: 600, margin: 1, errorCorrectionLevel: 'M' });
-
-      // White background
-      pdf.setFillColor(255, 255, 255);
-      pdf.rect(0, 0, pageWidth, pageHeight, 'F');
-
-      // Border
+      // Draw border only (no fill so label color shows through)
       pdf.setLineWidth(0.5);
       pdf.setDrawColor(0, 0, 0);
-      pdf.rect(margin, margin, pageWidth - (2 * margin), pageHeight - (2 * margin));
+      pdf.rect(margin, margin, pageWidth - 2 * margin, pageHeight - 2 * margin);
 
-      // Top center "4TL" (about 5-10% from top)
-      const topCenterY = margin + (pageHeight * 0.06);
-      pdf.setFontSize(12);
+      // 4TL logo (top-left)
       pdf.setFont('helvetica', 'bold');
-      try { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center', stroke: true }); } catch (e) { pdf.text('4TL', pageWidth / 2, topCenterY, { align: 'center' }); }
+      pdf.setFontSize(logoFontSize);
+      try {
+        pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left', stroke: true });
+      } catch (e) {
+        pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left' });
+      }
 
-      // Centered product QR (below 4TL text)
-      const qrX = (pageWidth - qrSize) / 2;
-      const qrY = topCenterY + 2;
+      // UUID (last 5 digits) top-right
+      pdf.setFontSize(uuidFontSize);
+      pdf.text(uuidShort, pageWidth - margin, margin + (uuidFontSize * 0.35), { align: 'right' });
+
+      // Full UUID shown on attached product label for tracking
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      const fullUuidLines = pdf.splitTextToSize(uuid, pageWidth - 2 * margin - 8);
+      const fullUuidY = margin + (uuidFontSize * 0.35) + 4;
+      pdf.text(fullUuidLines, pageWidth - margin, fullUuidY, { align: 'right' });
+
+      // Generate product QR
+      const productQrDataUrl = await QRCode.toDataURL(qrUrl, { width: 600, margin: 1, errorCorrectionLevel: 'M' });
+
+      // Place QR on left side (vertically centered)
+      const qrX = margin;
+      const qrY = (pageHeight - qrSize) / 2;
       pdf.addImage(productQrDataUrl, 'PNG', qrX, qrY, qrSize, qrSize);
 
-      // Product name large and bold, placed underneath the QR
-      pdf.setFontSize(24);
-      pdf.setFont('helvetica', 'bold');
-      const maxWidth = pageWidth - (2 * margin) - 4;
-      let nameLines = pdf.splitTextToSize(productName || 'NAME SHOULD SHOW HERE', maxWidth);
-      if (!nameLines || nameLines.length === 0 || nameLines.every(l => !String(l || '').trim())) {
-        nameLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
-      }
-      nameLines = nameLines.slice(0, 2);
-      const lineHeight = 10; // for ~24pt text
-      const startY = qrY + qrSize + 6;
-      nameLines.forEach((line, idx) => {
-        pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
-      });
+      // Product name to the right of the QR
+      const nameX = qrX + qrSize + spacing;
+      const nameMaxWidth = pageWidth - margin - nameX;
 
-      // Download PDF
-      const fileName = `QR_${formData.product || 'Item'}_${shortId}.pdf`;
+      // Auto-fit font size to available width
+      let productFontSize = productNameMaxFont;
+      pdf.setFont('helvetica', 'bold');
+      while (productFontSize >= productNameMinFont) {
+        pdf.setFontSize(productFontSize);
+        if (pdf.getTextWidth(productName) <= nameMaxWidth) break;
+        productFontSize -= 1;
+      }
+
+      let displayName = productName;
+      pdf.setFontSize(productFontSize);
+      if (pdf.getTextWidth(displayName) > nameMaxWidth) {
+        while (displayName.length > 0 && pdf.getTextWidth(displayName + '...') > nameMaxWidth) {
+          displayName = displayName.slice(0, -1);
+        }
+        displayName = displayName + '...';
+      }
+
+      const nameY = qrY + (productFontSize * 0.35);
+      pdf.text(displayName, nameX, nameY, { align: 'left' });
+
+      const fileName = `QR_${formData.product || 'Item'}_${uuidShort}.pdf`;
       pdf.save(fileName);
 
     } catch (error) {
@@ -525,6 +593,38 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
               <p className="text-xs text-gray-500 mt-1">
                 💡 Optional: Free text - describe exactly where this item is stored
               </p>
+            </div>
+
+            {/* Category Dropdown - NEW */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Category
+              </label>
+              <select
+                value={formData.category}
+                onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+              >
+                <option value="Clothing">Clothing</option>
+                <option value="Shoes">Shoes</option>
+                <option value="Bags and Accessories">Bags and Accessories</option>
+                <option value="Tools/Home & Garden">Tools/Home & Garden</option>
+                <option value="Electronics">Electronics</option>
+                <option value="Car Parts">Car Parts</option>
+                <option value="Toys">Toys</option>
+                <option value="Kids Clothes/Shoes">Kids Clothes/Shoes</option>
+                <option value="Beauty Products">Beauty Products</option>
+                <option value="Other">Other</option>
+              </select>
+              {formData.category === 'Other' && (
+                <input
+                  type="text"
+                  placeholder="Specify category"
+                  value={formData.categoryOther}
+                  onChange={(e) => setFormData({ ...formData, categoryOther: e.target.value })}
+                  className="mt-2 w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              )}
             </div>
 
             {/* NEW: Description - Below Product Name */}
@@ -785,9 +885,17 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
                   placeholder="10.00"
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 />
+                {formData.applyVistaFees && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    🚚 Total with fees: ${( (parseFloat(formData.purchasePrice)||0) * 1.15 + 2 ).toFixed(2)}
+                  </p>
+                )}
               </div>
               <div>
-                <label htmlFor="listingPrice" className="block text-sm font-medium text-gray-700">Listing Price</label>
+                <label htmlFor="listingPrice" className="block text-sm font-medium text-gray-700">
+                  Listing Price
+                  {formData.isAuction && <span className="ml-2 text-xs text-gray-500">(auction)</span>}
+                </label>
                 <input
                   type="number"
                   name="listingPrice"
@@ -796,6 +904,78 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
                   onChange={handleChange}
                   step="0.01"
                   placeholder="15.00"
+                  disabled={formData.isAuction}
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                />
+              </div>
+            </div>
+            {/* Vista fees / auction toggles */}
+            <div className="flex flex-wrap gap-4 mt-2">
+              <label className="inline-flex items-center text-sm">
+                <input
+                  type="checkbox"
+                  name="applyVistaFees"
+                  checked={formData.applyVistaFees}
+                  onChange={handleChange}
+                  className="mr-2 h-4 w-4 text-purple-600 border-gray-300 rounded"
+                />
+                Apply Vista Fees (15% + $2)
+              </label>
+              <label className="inline-flex items-center text-sm">
+                <input
+                  type="checkbox"
+                  name="applyPurchaseFee"
+                  checked={formData.applyPurchaseFee}
+                  onChange={handleChange}
+                  className="mr-2 h-4 w-4 text-purple-600 border-gray-300 rounded"
+                />
+                Apply purchase fee (%)
+              </label>
+              {formData.applyPurchaseFee && (
+                <input
+                  type="number"
+                  name="purchaseFeePercent"
+                  value={formData.purchaseFeePercent}
+                  onChange={handleChange}
+                  step="0.01"
+                  placeholder="e.g. 5"
+                  className="w-24 px-2 py-1 border border-gray-300 rounded text-sm"
+                />
+              )}
+              <label className="inline-flex items-center text-sm">
+                <input
+                  type="checkbox"
+                  name="isAuction"
+                  checked={formData.isAuction}
+                  onChange={handleChange}
+                  className="mr-2 h-4 w-4 text-purple-600 border-gray-300 rounded"
+                />
+                Auction Listing (no fixed price)
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 mt-4">
+              <div>
+                <label htmlFor="shippingCost" className="block text-sm font-medium text-gray-700">Seller Shipping Cost</label>
+                <input
+                  type="number"
+                  name="shippingCost"
+                  id="shippingCost"
+                  value={formData.shippingCost}
+                  onChange={handleChange}
+                  step="0.01"
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                />
+              </div>
+              <div>
+                <label htmlFor="buyerShipping" className="block text-sm font-medium text-gray-700">Buyer Shipping Received</label>
+                <input
+                  type="number"
+                  name="buyerShipping"
+                  id="buyerShipping"
+                  value={formData.buyerShipping}
+                  onChange={handleChange}
+                  step="0.01"
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                 />
               </div>
@@ -818,7 +998,7 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
             <div>
               <label htmlFor="listDate" className="block text-sm font-medium text-gray-700 mb-1">
                 List Date
-                {formData.listDate && !formData.platform.trim() && (
+                {formData.listDate && (!formData.platforms || formData.platforms.length === 0) && (
                   <span className="ml-2 text-red-600 text-xs">⚠️ Platform required!</span>
                 )}
               </label>
@@ -828,7 +1008,7 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
                   value={formData.listDate}
                   onChange={(e) => setFormData({ ...formData, listDate: e.target.value })}
                   className={`flex-1 w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 ${
-                    formData.listDate && !formData.platform.trim()
+                    formData.listDate && (!formData.platforms || formData.platforms.length === 0)
                       ? 'border-red-500 focus:ring-red-500'
                       : 'border-gray-300 focus:ring-purple-500'
                   }`}
@@ -873,28 +1053,25 @@ const ProductForm = memo(({ db, collectionPath, currentProduct, currentQrCodeId,
             </div>
 
             <div>
-              <label htmlFor="platform" className="block text-sm font-medium text-gray-700 mb-1">
-                Platform Listed On
-                {formData.platform.trim() && !formData.listDate && (
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Platforms Listed On
+                {formData.platforms && formData.platforms.length > 0 && !formData.listDate && (
                   <span className="ml-2 text-red-600 text-xs">* Requires List Date!</span>
                 )}
               </label>
-              <input
-                type="text"
-                name="platform"
-                id="platform"
-                value={formData.platform}
-                onChange={handleChange}
-                placeholder="e.g., eBay, Poshmark"
-                className={`mt-1 block w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm ${
-                  formData.platform.trim() && !formData.listDate
-                    ? 'border-red-500 focus:ring-red-500'
-                    : ''
-                }`}
-              />
-              <p className="text-xs text-orange-600 mt-1 font-medium">
-                ⚠️ Only fill this in AFTER you've actually listed the item!
-              </p>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {PLATFORMS.map(p => (
+                  <label key={p} className="inline-flex items-center text-sm">
+                    <input
+                      type="checkbox"
+                      className="mr-1 h-4 w-4 text-purple-600 border-gray-300 rounded"
+                      checked={formData.platforms.includes(p)}
+                      onChange={() => togglePlatform(p)}
+                    />
+                    {p}
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
 

@@ -1,78 +1,15 @@
 // src/views/QrGenerator.js
 import React, { useState, useEffect } from 'react';
 import { jsPDF } from 'jspdf';
+import QRCode from 'qrcode';
 import { APP_CONFIG } from '../config';
-
-// Hook to load external script
-function useScript(src, globalName) {
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    if (window[globalName]) {
-      setLoaded(true);
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = src;
-    script.async = true;
-    script.onload = () => setLoaded(true);
-    document.body.appendChild(script);
-    return () => {
-      if (script.parentNode) script.parentNode.removeChild(script);
-    };
-  }, [src, globalName]);
-  return loaded;
-}
+import { makeQrUrl } from '../utils';
 
 const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCodeId, inventory }) => {
-  const qrLibLoaded = useScript('https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js', 'QRCode');
   const [qrCodes, setQrCodes] = useState([]);
   const [selectedIds, setSelectedIds] = useState(currentQrCodeId ? [currentQrCodeId] : []);
   const [generating, setGenerating] = useState(false);
   const [quantity, setQuantity] = useState(1);
-
-  // Get last 5 characters of UUID (after last dash)
-  const getShortId = (uuid) => {
-    if (!uuid) return '';
-    const parts = uuid.split('-');
-    return parts[parts.length - 1].toUpperCase();
-  };
-
-  // Generate QR codes as data URLs
-  useEffect(() => {
-    if (!qrLibLoaded || selectedIds.length === 0) return;
-
-    const generateCodes = async () => {
-      console.log('Generating QR codes for:', selectedIds);
-      const codes = [];
-      for (const id of selectedIds) {
-        try {
-          const dataUrl = await window.QRCode.toDataURL(id, {
-            width: 600,
-            margin: 2,
-            errorCorrectionLevel: 'M',
-            color: {
-              dark: '#000000',
-              light: '#FFFFFF'
-            }
-          });
-          console.log('Generated QR for:', id, 'Data URL length:', dataUrl.length);
-          const product = inventory.find(p => p.id === id);
-          codes.push({
-            id,
-            dataUrl,
-            shortId: getShortId(id),
-            title: product?.title || 'Unknown Product'
-          });
-        } catch (error) {
-          console.error('Error generating QR code:', error);
-        }
-      }
-      console.log('Total QR codes generated:', codes.length);
-      setQrCodes(codes);
-    };
-
-    generateCodes();
-  }, [qrLibLoaded, selectedIds, inventory]);
 
   const toggleSelection = (id) => {
     setSelectedIds(prev => 
@@ -118,56 +55,83 @@ const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCod
       
       console.log(`Valid codes: ${validCodes.length}/${qrCodes.length}`);
       
-      // Create PDF with 1.88" x 2.88" pages
+      // Create PDF for product labels: 77.98mm x 52mm (landscape)
+      const pageWidth = 77.98;
+      const pageHeight = 52;
+      const margin = 1; // 1mm margin
+      const qrSize = 7; // 7mm QR code
+      const spacing = 1.5; // spacing between QR and product name
+      const logoFontSize = 18;
+      const uuidFontSize = 12;
+      const productNameMaxFont = 18;
+      const productNameMinFont = 16;
+
       const pdf = new jsPDF({
-        orientation: 'portrait',
+        orientation: 'landscape',
         unit: 'mm',
-        format: [47.752, 73.152],
+        format: [pageWidth, pageHeight],
         compress: true
       });
 
       for (let i = 0; i < validCodes.length; i++) {
         const code = validCodes[i];
         const product = inventory.find(p => p.id === code.id);
-        const productName = product?.product || 'Unknown';
-        
-        if (i > 0) pdf.addPage([47.752, 73.152]);
+        const productName = (product?.product || 'UNKNOWN').toUpperCase();
+        const uuidShort = (code.id || '').replace(/-/g, '').slice(-5).toUpperCase();
 
-        const pageWidth = 47.752;
-        const pageHeight = 73.152;
-        const margin = 2.032;
-        const qrSize = pageWidth * 0.5; // much larger for reliable scanning
+        if (i > 0) pdf.addPage([pageWidth, pageHeight]);
 
-        // Background
-        pdf.setFillColor(255,255,255);
-        pdf.rect(0,0,pageWidth,pageHeight,'F');
+        // Border only (no fill so pink label shows through)
         pdf.setLineWidth(0.5);
-        pdf.setDrawColor(0,0,0);
-        pdf.rect(margin, margin, pageWidth - 2*margin, pageHeight - 2*margin);
+        pdf.setDrawColor(0, 0, 0);
+        pdf.rect(margin, margin, pageWidth - 2 * margin, pageHeight - 2 * margin);
 
-        // Top center 4TL
-        const topCenterY = margin + (pageHeight * 0.06);
-        pdf.setFontSize(12); pdf.setFont('helvetica','bold');
-        try { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center', stroke: true }); } catch (e) { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center' }); }
-
-        // Centered product QR (below 4TL)
-        const qrX = (pageWidth - qrSize) / 2;
-        const qrY = topCenterY + 2;
-        try { pdf.addImage(code.dataUrl, 'PNG', qrX, qrY, qrSize, qrSize); } catch (err) { console.warn('Failed to render product QR', err); }
-
-        // Product name large and bold underneath QR
-        pdf.setFontSize(24); pdf.setFont('helvetica','bold');
-        const maxWidth = pageWidth - (2 * margin) - 4;
-        let nameLines = pdf.splitTextToSize((productName || '').toUpperCase(), maxWidth);
-        if (!nameLines || nameLines.length === 0 || nameLines.every(l => !String(l || '').trim())) {
-          nameLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
+        // 4TL logo (top-left)
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(logoFontSize);
+        try {
+          pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left', stroke: true });
+        } catch (e) {
+          pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left' });
         }
-        nameLines = nameLines.slice(0, 2);
-        const lineHeight = 10;
-        const startY = qrY + qrSize + 6;
-        nameLines.forEach((line, idx) => {
-          pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
-        });
+
+        // UUID (last 5 digits) top-right
+        pdf.setFontSize(uuidFontSize);
+        pdf.text(uuidShort, pageWidth - margin, margin + (uuidFontSize * 0.35), { align: 'right' });
+
+        // QR code left side
+        const qrX = margin;
+        const qrY = margin + logoFontSize * 0.35 + 3; // slightly below logo
+        try {
+          pdf.addImage(code.dataUrl, 'PNG', qrX, qrY, qrSize, qrSize, undefined, 'FAST');
+        } catch (err) {
+          console.warn('Failed to render product QR', err);
+        }
+
+        // Product name to the right of QR
+        const nameX = qrX + qrSize + spacing;
+        const nameMaxWidth = pageWidth - margin - nameX;
+
+        // Auto-fit font size between max and min
+        let fontSize = productNameMaxFont;
+        pdf.setFont('helvetica', 'bold');
+        while (fontSize >= productNameMinFont) {
+          pdf.setFontSize(fontSize);
+          if (pdf.getTextWidth(productName) <= nameMaxWidth) break;
+          fontSize -= 1;
+        }
+
+        let displayName = productName;
+        pdf.setFontSize(fontSize);
+        if (pdf.getTextWidth(displayName) > nameMaxWidth) {
+          while (displayName.length > 0 && pdf.getTextWidth(displayName + '...') > nameMaxWidth) {
+            displayName = displayName.slice(0, -1);
+          }
+          displayName = displayName + '...';
+        }
+
+        const nameY = qrY + (qrSize / 2) + (fontSize * 0.35);
+        pdf.text(displayName, nameX, nameY, { align: 'left' });
       }
 
       const filename = `QR-Labels-${new Date().toISOString().slice(0,10)}.pdf`;
@@ -188,31 +152,29 @@ const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCod
     // ...existing validation...
 
     try {
-      if (!window.QRCode) {
-        alert('QR Code library is still loading. Please wait a moment and try again.');
-        return;
-      }
-
       setGenerating(true);
+
+      // Bulk QR labels: 50mm x 77.98mm portrait
+      const pageWidth = 50;
+      const pageHeight = 77.98;
+      const margin = 1; // 1mm margin
+      const qrSize = 32; // 32mm QR
+      const uuidFontSize = 41; // large text
+      const logoFontSize = 18; // 4TL logo size
 
       const pdf = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
-        format: [47.752, 73.152],
+        format: [pageWidth, pageHeight],
         compress: true
       });
 
-      const pageWidth = 47.752;
-      const pageHeight = 73.152;
-      const qrSize = pageWidth * 0.22;
-      const margin = 1.6; // safe border margin used below
-
       for (let i = 0; i < quantity; i++) {
         const uuid = crypto.randomUUID();
-        const qrUrl = `https://resell-inventory-flow.web.app/scan/${uuid}`;
-        const shortId = uuid.split('-').pop().substring(0, 5).toUpperCase();
+        const qrUrl = makeQrUrl(uuid);
+        const shortId = uuid.replace(/-/g, '').slice(-5).toUpperCase();
 
-        const dataUrl = await window.QRCode.toDataURL(qrUrl, {
+        const dataUrl = await QRCode.toDataURL(qrUrl, {
           width: 600,
           margin: 2,
           errorCorrectionLevel: 'M',
@@ -220,43 +182,45 @@ const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCod
         });
 
         if (i > 0) {
-          pdf.addPage([47.752, 73.152]);
+          pdf.addPage([pageWidth, pageHeight]);
         }
 
-        // White background
-        pdf.setFillColor(255, 255, 255);
-        pdf.rect(0, 0, pageWidth, pageHeight, 'F');
-
-        // Draw border
+        // Border (no fill so pink label shows through)
         pdf.setLineWidth(0.5);
-        pdf.setDrawColor(0,0,0);
-        pdf.rect(1.6, 1.6, pageWidth - 3.2, pageHeight - 3.2);
+        pdf.setDrawColor(0, 0, 0);
+        pdf.rect(margin, margin, pageWidth - 2 * margin, pageHeight - 2 * margin);
 
-        // Top center 4TL
-        const topCenterY = 1.6 + (pageHeight * 0.06);
-        pdf.setFontSize(12); pdf.setFont('helvetica','bold');
-        try { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center', stroke: true }); } catch(e) { pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center' }); }
+        // 4TL logo (top center)
+        const logoY = margin + (logoFontSize * 0.35);
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(logoFontSize);
+        try {
+          pdf.text('4TL', pageWidth / 2, logoY, { align: 'center', stroke: true });
+        } catch (e) {
+          pdf.text('4TL', pageWidth / 2, logoY, { align: 'center' });
+        }
 
-        // Centered QR (product)
+        // QR Code (centered horizontally, below logo)
         const qrX = (pageWidth - qrSize) / 2;
-        const qrY = topCenterY + 2;
+        const qrY = logoY + 4; // small gap below logo
         pdf.addImage(dataUrl, 'PNG', qrX, qrY, qrSize, qrSize, undefined, 'FAST');
 
-        // Placeholder product name in large bold horizontal text
-        pdf.setFontSize(24); pdf.setFont('helvetica','bold');
-        const maxWidth = pageWidth - (2 * margin) - 4;
-        let placeholderLines = pdf.splitTextToSize('NAME SHOULD SHOW HERE', maxWidth);
-        placeholderLines = placeholderLines.slice(0, 2);
-        const lineHeight = 10;
-        const startY = qrY + qrSize + 6;
-        placeholderLines.forEach((line, idx) => {
-          pdf.text(line, pageWidth / 2, startY + (idx * lineHeight), { align: 'center' });
-        });
+        // UUID (last 5) centered below QR with 1.5mm spacing
+        const uuidY = qrY + qrSize + 1.5 + (uuidFontSize * 0.35);
+        pdf.setFontSize(uuidFontSize);
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(shortId, pageWidth / 2, uuidY, { align: 'center' });
+
+        // Full UUID on bulk label for tracking
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8);
+        const fullUuidLines = pdf.splitTextToSize(uuid, pageWidth - (2 * margin) - 4);
+        const fullUuidY = uuidY + 5;
+        pdf.text(fullUuidLines, pageWidth / 2, fullUuidY, { align: 'center' });
       }
 
       pdf.save(`QR_Labels_${quantity}_${Date.now()}.pdf`);
       alert(`✅ Generated ${quantity} QR label(s)!`);
-      
     } catch (error) {
       console.error('Error generating labels:', error);
       alert('Error: ' + error.message);
@@ -265,13 +229,6 @@ const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCod
     }
   };
 
-  if (!qrLibLoaded) {
-    return (
-      <div className="flex justify-center items-center p-8">
-        <div className="text-gray-600">Loading QR code generator...</div>
-      </div>
-    );
-  }
 
   return (
     <div className="max-w-2xl mx-auto p-6">
@@ -317,15 +274,10 @@ const QrGenerator = ({ setView, setGlobalError, db, collectionPath, currentQrCod
           </p>
         </div>
 
-        {!qrLibLoaded && (
-          <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-            <p className="text-sm text-yellow-800">⏳ Loading QR code library...</p>
-          </div>
-        )}
 
         <button
           onClick={generateLabels}
-          disabled={generating || !qrLibLoaded}
+          disabled={generating}
           className="w-full bg-purple-600 text-white py-4 rounded-lg hover:bg-purple-700 disabled:bg-gray-400 font-medium text-lg transition-colors flex items-center justify-center gap-2"
         >
           {generating ? (

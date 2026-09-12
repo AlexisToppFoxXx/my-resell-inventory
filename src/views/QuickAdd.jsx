@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import { collection, doc, setDoc, query, where, getDocs } from 'firebase/firestore';
+import { normalizePlatform, normalizePlatforms, PLATFORMS, makeQrUrl } from '../utils';
 // import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 // import { getAuth } from 'firebase/auth';
 import { jsPDF } from 'jspdf';
+import QRCode from 'qrcode';
 
 function QuickAdd({ db, collectionPath, onComplete, setView }) {
   const [items, setItems] = useState(() => {
@@ -21,7 +23,9 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
         );
         if (hasContent) {
           console.log('Restoring draft from localStorage');
-          return parsed;
+          // ensure any older saved entry gets the new fields
+          const normalized = parsed.map(p => ({ ...defaultItem(), ...p }));
+          return normalized;
         } else {
           // Clear empty draft
           localStorage.removeItem('quickAddDraft');
@@ -32,7 +36,8 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
       }
     }
     // Default initial state
-    return [{
+    // ensure any parsed item gets the new fields
+    const defaultItem = () => ({
       id: crypto.randomUUID(),
       product: '',
       description: '',
@@ -52,21 +57,57 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
       photoLink: '',
       notes: '',
       purchaseDate: '',
+      platforms: [],            // NEW: multiple platforms support
+      buyerShipping: '',        // NEW: amount charged to buyer
       length: '',
       width: '',
       height: '',
       weight: '',
       shippingCost: '',
+      autoFeePercent: '',
+      applyVistaFees: false,
+      isAuction: false,
       listDate: '',
       listingUrl: '',
+      // legacy single-platform field is still stored for backwards compatibility, but
+      // we no longer render it anywhere.
       platform: '',
       soldDate: '',
       sellPrice: '',
       sellingFees: '',
       sellingNotes: '',
       category: 'Clothing',
+      categoryOther: '',        // NEW: when user selects “Other”
       photoUrls: []
-    }];
+    });
+    
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        // add defaults for any missing fields
+        const normalized = parsed.map(p => ({ ...defaultItem(), ...p }));
+        // Only restore if it has actual content (not just the initial blank item)
+        const hasContent = normalized.some(item => 
+          item.product.trim() || 
+          item.description.trim() || 
+          item.brand.trim() ||
+          item.purchasePrice ||
+          item.listingPrice
+        );
+        if (hasContent) {
+          console.log('Restoring draft from localStorage');
+          return normalized;
+        } else {
+          // Clear empty draft
+          localStorage.removeItem('quickAddDraft');
+        }
+      } catch (e) {
+        console.error('Failed to restore draft:', e);
+        localStorage.removeItem('quickAddDraft');
+      }
+    }
+    // Default initial state
+    return [defaultItem()];
   });
   const [locations, setLocations] = useState([]); // NEW: Available locations
   const [saving, setSaving] = useState(false);
@@ -123,11 +164,16 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
       photoLink: '',
       notes: '',
       purchaseDate: '',
+      platforms: [],            // NEW
+      buyerShipping: '',        // NEW
       length: '',
       width: '',
       height: '',
       weight: '',
       shippingCost: '',
+      autoFeePercent: '',
+      applyVistaFees: false,
+      isAuction: false,
       listDate: '',
       listingUrl: '',
       platform: '',
@@ -136,21 +182,24 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
       sellingFees: '',
       sellingNotes: '', // NEW
       category: 'Clothing',
-      photoUrls: []
+      categoryOther: '',      // NEW
     }]);
   };
 
+  // helper to modify a single item field and recalc fees/profit if needed
   const updateItem = (index, field, value) => {
-    const newItems = [...items];
-    newItems[index][field] = value;
-    // auto-calc selling fees if percentage provided and either sellPrice or autoFeePercent changed
-    const item = newItems[index];
-    const pct = parseFloat(item.autoFeePercent);
-    if (!isNaN(pct) && pct > 0) {
-      const sell = parseFloat(item.sellPrice) || 0;
-      item.sellingFees = (sell * (pct / 100)).toFixed(2);
-    }
-    setItems(newItems);
+    setItems(prev => {
+      const copy = [...prev];
+      copy[index][field] = value;
+      // auto-calc selling fees if percentage provided and either sellPrice or autoFeePercent changed
+      const item = copy[index];
+      const pct = parseFloat(item.autoFeePercent);
+      if (!isNaN(pct) && pct > 0) {
+        const sell = parseFloat(item.sellPrice) || 0;
+        item.sellingFees = (sell * (pct / 100)).toFixed(2);
+      }
+      return copy;
+    });
   };
 
   const removeItem = (index) => {
@@ -162,13 +211,32 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
   // const handleDownloadPhoto = async (photoUrl, productName, photoIndex) => { ... }
   // const handleDownloadAllPhotos = async (item) => { ... }
 
+  // helper to toggle a platform in an item's platforms array
+  const togglePlatform = (index, plat) => {
+    setItems(prev => {
+      const copy = [...prev];
+      const current = copy[index].platforms || [];
+      if (current.includes(plat)) {
+        copy[index].platforms = current.filter(p => p !== plat);
+      } else {
+        copy[index].platforms = [...current, plat];
+      }
+      return copy;
+    });
+  };
+
   const calculateProfit = (item) => {
-    const sellPrice = parseFloat(item.sellPrice) || 0;
-    const purchasePrice = parseFloat(item.purchasePrice) || 0;
-    const sellingFees = parseFloat(item.sellingFees) || 0;
-    const shipping = parseFloat(item.shippingCost) || 0;
-    if (sellPrice === 0) return 0;
-    return (sellPrice - purchasePrice - sellingFees - shipping);
+    const sell = parseFloat(item.sellPrice) || 0;
+    const purchase = parseFloat(item.purchasePrice) || 0;
+    const fee = parseFloat(item.sellingFees) || 0;
+    const sCost = parseFloat(item.shippingCost) || 0;
+    const buyerShip = parseFloat(item.buyerShipping) || 0;
+    const purchaseFee = (item.applyVistaFees && parseFloat(item.autoFeePercent))
+      ? (purchase * ((parseFloat(item.autoFeePercent) || 0) / 100))
+      : 0;
+    if (sell === 0) return 0;
+    // buyer shipping contributes to profit rather than reducing it
+    return sell + buyerShip - purchase - fee - sCost - purchaseFee;
   };
 
   const handleSaveAll = async () => {
@@ -181,17 +249,21 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
       return;
     }
     
-    // NEW: Validate that Platform requires List Date
-    const invalidPlatform = itemsToSave.find(item => item.platform.trim() && !item.listDate);
+    // NEW: Validate that selecting any platform requires a list date
+    const invalidPlatform = itemsToSave.find(item =>
+      item.platforms && item.platforms.length > 0 && !item.listDate
+    );
     if (invalidPlatform) {
-      alert('❌ If you enter a "Platform", you must also set a "List Date".\n\nDon\'t fill in Platform until you\'ve actually listed the item!\n\nIf you haven\'t listed it yet, leave Platform blank and it will show in "Not Yet Listed" priority.');
+      alert('❌ If you select one or more platforms, you must also set a "List Date".\n\nDon\'t choose platforms until you\'ve actually listed the item!');
       return;
     }
-    
-    // Validate that List Date requires Platform
-    const invalidListing = itemsToSave.find(item => item.listDate && !item.platform.trim());
+
+    // Validate that List Date requires at least one platform
+    const invalidListing = itemsToSave.find(item =>
+      item.listDate && (!item.platforms || item.platforms.length === 0)
+    );
     if (invalidListing) {
-      alert('❌ If you set a "List Date", you must also enter a "Platform" (e.g., eBay, Poshmark).\n\nList Date without Platform means the item isn\'t actually listed yet!');
+      alert('❌ If you set a "List Date", you must also select a platform (e.g., eBay, Poshmark).\n\nList Date without Platform means the item isn\'t actually listed yet!');
       return;
     }
     
@@ -216,65 +288,19 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
           height: parseFloat(item.height) || 0,
           weight: parseFloat(item.weight) || 0,
           shippingCost: parseFloat(item.shippingCost) || 0,
-          listingPrice: parseFloat(item.listingPrice) || 0,
-          msrp: parseFloat(item.msrp) || 0,
-          compEbayPrice: parseFloat(item.compEbayPrice) || 0,
-          photosTaken: item.photosTaken,
-          photoLink: item.photoLink || '',
-          notes: item.notes || '',
-          purchaseDate: item.purchaseDate || '',
+          buyerShipping: parseFloat(item.buyerShipping) || 0,
+          autoFeePercent: item.autoFeePercent || '',
+          applyVistaFees: item.applyVistaFees,
+          isAuction: item.isAuction,
           listDate: item.listDate || '',
           listingUrl: item.listingUrl || '',
-          platform: item.platform || '',
-          soldDate: item.soldDate || '',
-          sellPrice: parseFloat(item.sellPrice) || 0,
-          sellingFees: parseFloat(item.sellingFees) || 0,
-          sellingNotes: item.sellingNotes || '',
-          category: item.category,
-          qrCodeId: item.id,
-          createdAt: new Date().toISOString(),
-          quickImport: true,
-          photoUrls: []
+          platforms: normalizePlatforms(item.platforms || []),
+          category:
+            item.category === 'Other' ? item.categoryOther || '' : item.category || '',
+          purchaseDate: item.purchaseDate || '',
         };
         return setDoc(doc(db, collectionPath, item.id), productData);
       });
-      
-      await Promise.all(savePromises);
-      
-      // Clear draft
-      clearDraft();
-      
-      // Reset items
-      setItems([{
-        id: crypto.randomUUID(),
-        product: '',
-        description: '',
-        createdBy: '',
-        locationType: 'unknown', // NEW
-        location: '',
-        brand: '',
-        type: '',
-        size: '',
-        color: '',
-        condition: 'New',
-        purchasePrice: '',
-        listingPrice: '',
-        msrp: '',
-        compEbayPrice: '',
-        photosTaken: false,
-        photoLink: '',
-        notes: '',
-        purchaseDate: '',
-        listDate: '',
-        listingUrl: '',
-        platform: '',
-        soldDate: '',
-        sellPrice: '',
-        sellingFees: '',
-        sellingNotes: '',
-        category: 'Clothing',
-        photoUrls: []
-      }]);
       
       console.log('[QuickAdd] Items saved successfully, navigating to list');
       
@@ -324,73 +350,64 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
     setGeneratingQR(prev => ({ ...prev, [itemIndex]: true }));
 
     try {
-      if (!window.QRCode) {
-        alert('QR Code library is loading, please try again in a moment.');
-        setGeneratingQR(prev => ({ ...prev, [itemIndex]: false }));
-        return;
-      }
-
-      const qrUrl = `https://resell-inventory-flow.web.app/scan/${item.id}`;
+      const qrUrl = makeQrUrl(item.id);
       const shortId = getShortId(item.id);
       const productName = (item.product || '').toUpperCase();
 
-      const dataUrl = await window.QRCode.toDataURL(qrUrl, {
+      // generate QR code image
+      const dataUrl = await QRCode.toDataURL(qrUrl, {
         width: 600,
         margin: 2,
         errorCorrectionLevel: 'M',
         color: { dark: '#000000', light: '#FFFFFF' }
       });
 
+      // new label size 1.88" x 2.88" same as other views
       const pdf = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
-        format: [50.8, 76.2],
+        format: [47.752, 73.152],
         compress: true
       });
 
-      const pageWidth = 50.8;
-      const pageHeight = 76.2;
-      const qrSize = 45;
+      const pageWidth = 47.752;
+      const pageHeight = 73.152;
+      const margin = 2.032; // 0.08in safe margin
+      const qrSize = pageWidth * 0.5;
+
+      // white background + border
+      pdf.setFillColor(255,255,255);
+      pdf.rect(0,0,pageWidth,pageHeight,'F');
+      pdf.setLineWidth(0.5);
+      pdf.setDrawColor(0,0,0);
+      pdf.rect(margin, margin, pageWidth - 2*margin, pageHeight - 2*margin);
+
+      // 4TL logo top-center
+      const topCenterY = margin + (pageHeight * 0.06);
+      pdf.setFontSize(12);
+      pdf.setFont('helvetica','bold');
+      try {
+        pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center', stroke: true });
+      } catch (e) {
+        pdf.text('4TL', pageWidth/2, topCenterY, { align: 'center' });
+      }
+
+      // QR image centered
       const qrX = (pageWidth - qrSize) / 2;
-      const qrY = 8;
-
-      // White background
-      pdf.setFillColor(255, 255, 255);
-      pdf.rect(0, 0, pageWidth, pageHeight, 'F');
-
-      // 4TL logo at top
-      pdf.setFontSize(16);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setTextColor(0, 0, 0);
-      pdf.text('4TL', pageWidth / 2, 5, { align: 'center' });
-
-      // QR code
+      const qrY = topCenterY + 2;
       pdf.addImage(dataUrl, 'PNG', qrX, qrY, qrSize, qrSize, undefined, 'FAST');
 
-      // LEFT side: SKU vertical
-      pdf.setFontSize(16);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setTextColor(0, 0, 0);
-      pdf.text(shortId, 3, pageHeight - 8, {
-        angle: 90
-      });
-
-      // RIGHT side: SKU vertical
-      pdf.setFontSize(16);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setTextColor(0, 0, 0);
-      pdf.text(shortId, pageWidth - 3, 13, {
-        angle: 270
-      });
-
-      // BOTTOM: Product name
+      // Product name below QR
       if (productName) {
-        pdf.setFontSize(9);
-        pdf.setFont('helvetica', 'bold');
-        pdf.setTextColor(0, 0, 0);
-        pdf.text(productName, pageWidth / 2, pageHeight - 5, {
-          align: 'center',
-          maxWidth: pageWidth - 16
+        pdf.setFontSize(24);
+        pdf.setFont('helvetica','bold');
+        const maxW = pageWidth - 2*margin - 4;
+        let lines = pdf.splitTextToSize(productName, maxW);
+        lines = (lines && lines.length) ? lines.slice(0,2) : [];
+        const lineH = 10;
+        const startY = qrY + qrSize + 6;
+        lines.forEach((line, idx) => {
+          pdf.text(line, pageWidth/2, startY + idx * lineH, { align: 'center' });
         });
       }
 
@@ -405,15 +422,6 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
     }
   };
 
-  // Load QR Code library on mount - FIX: Use useEffect instead of useState
-  useEffect(() => {
-    if (!window.QRCode) {
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js';
-      script.async = true;
-      document.body.appendChild(script);
-    }
-  }, []);
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -568,7 +576,17 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                     <option value="Tools/Home & Garden">Tools/Home & Garden</option>
                     <option value="Electronics">Electronics</option>
                     <option value="Car Parts">Car Parts</option>
+                    <option value="Other">Other (specify...)</option>
                   </select>
+                  {item.category === 'Other' && (
+                    <input
+                      type="text"
+                      placeholder="Specify category"
+                      value={item.categoryOther}
+                      onChange={(e) => updateItem(index, 'categoryOther', e.target.value)}
+                      className="mt-1 w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  )}
                 </div>
 
                 {/* Brand */}
@@ -690,10 +708,32 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                       placeholder="0.00"
                       value={item.listingPrice}
                       onChange={(e) => updateItem(index, 'listingPrice', e.target.value)}
+                      disabled={item.isAuction}
                       className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
                     />
                   </div>
                 </div>
+              </div>
+              {/* Vista fees / auction toggles */}
+              <div className="mt-2 flex flex-wrap gap-4">
+                <label className="inline-flex items-center text-sm">
+                  <input
+                    type="checkbox"
+                    checked={item.applyVistaFees}
+                    onChange={(e) => updateItem(index, 'applyVistaFees', e.target.checked)}
+                    className="mr-2 h-4 w-4 text-purple-600 border-gray-300 rounded"
+                  />
+                  Apply Vista Fees (15% + $2)
+                </label>
+                <label className="inline-flex items-center text-sm">
+                  <input
+                    type="checkbox"
+                    checked={item.isAuction}
+                    onChange={(e) => updateItem(index, 'isAuction', e.target.checked)}
+                    className="mr-2 h-4 w-4 text-purple-600 border-gray-300 rounded"
+                  />
+                  Auction Listing (no fixed price)
+                </label>
               </div>
 
               {/* Timeline & Listing Section */}
@@ -715,7 +755,7 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       List Date
-                      {item.listDate && !item.platform.trim() && (
+                      {item.listDate && (!item.platforms || item.platforms.length === 0) && (
                         <span className="ml-2 text-red-600 text-xs">⚠️ Platform required!</span>
                       )}
                     </label>
@@ -725,7 +765,7 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                         value={item.listDate}
                         onChange={(e) => updateItem(index, 'listDate', e.target.value)}
                         className={`flex-1 w-full border rounded-lg p-2 focus:outline-none focus:ring-2 ${
-                          item.listDate && !item.platform.trim()
+                          item.listDate && (!item.platforms || item.platforms.length === 0)
                             ? 'border-red-500 focus:ring-red-500'
                             : 'border-gray-300 focus:ring-purple-500'
                         }`}
@@ -774,28 +814,33 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                     )}
                   </div>
 
-                  {/* Platform - WITH NEW VALIDATION */}
+                  {/* Platforms (multi-select) */}
                   <div className="md:col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Platform
-                      {item.listDate && !item.platform.trim() && (
+                      Platforms
+                      {item.listDate && (!item.platforms || item.platforms.length === 0) && (
                         <span className="ml-2 text-red-600 text-xs">* Required with List Date</span>
                       )}
-                      {item.platform.trim() && !item.listDate && (
+                      {item.platforms && item.platforms.length > 0 && !item.listDate && (
                         <span className="ml-2 text-red-600 text-xs">* Requires List Date!</span>
                       )}
                     </label>
-                    <input
-                      type="text"
-                      placeholder="e.g., eBay, Poshmark, Facebook Marketplace"
-                      value={item.platform}
-                      onChange={(e) => updateItem(index, 'platform', e.target.value)}
-                      className={`w-full border rounded-lg p-2 focus:outline-none focus:ring-2 ${
-                        (item.listDate && !item.platform.trim()) || (item.platform.trim() && !item.listDate)
-                          ? 'border-red-500 focus:ring-red-500'
-                          : 'border-gray-300 focus:ring-purple-500'
-                      }`}
-                    />
+                    <div className="flex flex-wrap gap-2">
+                      {PLATFORMS.map(p => (
+                        <button
+                          type="button"
+                          key={p}
+                          className={`px-2 py-1 rounded text-sm border ${
+                            item.platforms && item.platforms.includes(p)
+                              ? 'bg-purple-500 text-white border-purple-500'
+                              : 'bg-white text-gray-700 border-gray-300'
+                          }`}
+                          onClick={() => togglePlatform(index, p)}
+                        >
+                          {p}
+                        </button>
+                      ))}
+                    </div>
                     <p className="text-xs text-orange-600 mt-1 font-medium">
                       ⚠️ Only fill this in AFTER you've actually listed the item!
                     </p>
@@ -803,19 +848,20 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                 </div>
 
                 {/* NEW: Validation Warning Box - Updated */}
-                {(item.listDate && !item.platform.trim()) || (item.platform.trim() && !item.listDate) ? (
+                {((item.listDate && (!item.platforms || item.platforms.length === 0)) ||
+                  ((item.platforms && item.platforms.length > 0) && !item.listDate)) ? (
                   <div className="mt-3 p-3 bg-red-50 border border-red-300 rounded-lg">
                     <p className="text-sm text-red-800">
-                      <strong>⚠️ Warning:</strong> List Date and Platform must be filled in together!
+                      <strong>⚠️ Warning:</strong> List Date and Platforms must be filled in together!
                       <br />
                       <strong>Please either:</strong>
                     </p>
                     <ul className="text-sm text-red-700 mt-2 ml-4 list-disc">
-                      {item.platform.trim() && !item.listDate && (
+                      {item.platforms && item.platforms.length > 0 && !item.listDate && (
                         <li><strong>Set the List Date</strong> to when you actually listed it</li>
                       )}
-                      {item.listDate && !item.platform.trim() && (
-                        <li><strong>Enter the platform</strong> where it's listed (e.g., "eBay", "Poshmark")</li>
+                      {item.listDate && (!item.platforms || item.platforms.length === 0) && (
+                        <li><strong>Select at least one platform</strong> where it's listed (e.g., "eBay", "Poshmark")</li>
                       )}
                       <li><strong>Or clear both fields</strong> if it's not listed yet (will show in "Not Yet Listed")</li>
                     </ul>
@@ -881,6 +927,20 @@ function QuickAdd({ db, collectionPath, onComplete, setView }) {
                       onChange={(e) => updateItem(index, 'shippingCost', e.target.value)}
                       className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
                     />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Buyer Shipping</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={item.buyerShipping}
+                      onChange={(e) => updateItem(index, 'buyerShipping', e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      💡 Amount charged to buyer for shipping (used in profit calc)
+                    </p>
                   </div>
                 </div>
               </div>
