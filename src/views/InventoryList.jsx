@@ -367,28 +367,24 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
       const qrCodeId = product.qrCodeId || product.id;
       const qrUrl = makeQrUrl(qrCodeId);
       const shortId = getShortId(qrCodeId);
-      const productName = (product.product || '').toUpperCase();
+      const productName = (product.product || '').trim();
 
       // Generate product QR code
       const productQrDataUrl = await QRCode.toDataURL(qrUrl, {
-        width: 400,
+        width: 500,
         margin: 1,
         errorCorrectionLevel: 'M',
         color: { dark: '#000000', light: '#FFFFFF' }
       });
 
-
-
       const pageWidth = 77.98;
       const pageHeight = 52;
       const margin = 1;
-      const qrSize = 7;
-      const spacing = 1.5;
-      const logoFontSize = 18;
+      const qrSize = 16;
+      const spacing = 2;
+      const logoFontSize = 14;
       const uuidFontSize = 12;
-      const productNameMaxFont = 18;
-      const productNameMinFont = 16;
-      const uuid = qrCodeId;
+      const productNameFontSize = 10;
 
       const pdf = new jsPDF({
         orientation: 'landscape',
@@ -402,55 +398,35 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
       pdf.setDrawColor(0, 0, 0);
       pdf.rect(margin, margin, pageWidth - 2 * margin, pageHeight - 2 * margin);
 
-      // 4TL logo (top-left)
+      // Short ID in top right, matching the QR product label
       pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(logoFontSize);
-      try {
-        pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left', stroke: true });
-      } catch (e) {
-        pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left' });
-      }
-
-      // UUID (last 5 digits) top-right
       pdf.setFontSize(uuidFontSize);
-      pdf.setFont('helvetica', 'bold');
       pdf.text(shortId, pageWidth - margin, margin + (uuidFontSize * 0.35), { align: 'right' });
 
-      // Full UUID shown on attached product label for tracking
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(8);
-      const fullUuidLines = pdf.splitTextToSize(uuid, pageWidth - 2 * margin - 8);
-      const fullUuidY = margin + (uuidFontSize * 0.35) + 4;
-      pdf.text(fullUuidLines, pageWidth - margin, fullUuidY, { align: 'right' });
+      // 4TL logo moved to bottom center
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(logoFontSize);
+      pdf.text('4TL', pageWidth / 2, pageHeight - margin - 1, { align: 'center' });
 
-      // Place QR on left side (vertically centered)
+      // Place QR on the far left side, vertically centered
       const qrX = margin;
       const qrY = (pageHeight - qrSize) / 2;
       pdf.addImage(productQrDataUrl, 'PNG', qrX, qrY, qrSize, qrSize);
 
-      // Product name to the right of the QR
+      // Product name wraps on the right side using splitTextToSize
       const nameX = qrX + qrSize + spacing;
       const nameMaxWidth = pageWidth - margin - nameX;
-
-      let productFontSize = productNameMaxFont;
       pdf.setFont('helvetica', 'bold');
-      while (productFontSize >= productNameMinFont) {
-        pdf.setFontSize(productFontSize);
-        if (pdf.getTextWidth(productName) <= nameMaxWidth) break;
-        productFontSize -= 1;
+      pdf.setFontSize(productNameFontSize);
+      const wrappedName = pdf.splitTextToSize(productName, nameMaxWidth);
+      const nameLines = wrappedName.slice(0, 4);
+      if (wrappedName.length > 4) {
+        const lastLine = nameLines[3];
+        nameLines[3] = `${lastLine.slice(0, Math.max(0, lastLine.length - 3))}...`;
       }
 
-      let displayName = productName;
-      pdf.setFontSize(productFontSize);
-      if (pdf.getTextWidth(displayName) > nameMaxWidth) {
-        while (displayName.length > 0 && pdf.getTextWidth(displayName + '...') > nameMaxWidth) {
-          displayName = displayName.slice(0, -1);
-        }
-        displayName = displayName + '...';
-      }
-
-      const nameY = qrY + (productFontSize * 0.35);
-      pdf.text(displayName, nameX, nameY, { align: 'left' });
+      const nameY = margin + 11;
+      pdf.text(nameLines, nameX, nameY, { align: 'left' });
 
       const fileName = `QR_${product.product || 'Item'}_${shortId}.pdf`;
       pdf.save(fileName);
@@ -484,12 +460,11 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
       const pageWidth = 77.98;
       const pageHeight = 52;
       const margin = 1;
-      const qrSize = 7;
-      const spacing = 1.5;
-      const logoFontSize = 18;
+      const qrSize = 16;
+      const spacing = 2;
+      const logoFontSize = 14;
       const uuidFontSize = 12;
-      const productNameMaxFont = 18;
-      const productNameMinFont = 16;
+      const productNameFontSize = 10;
 
       const pdf = new jsPDF({
         orientation: 'landscape',
@@ -503,11 +478,10 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
         const qrId = product.qrCodeId || product.id;
         const qrUrl = makeQrUrl(qrId);
         const shortId = getShortId(qrId);
-        const uuid = qrId;
-        const productName = (product.product || '').toUpperCase();
+        const productName = (product.product || '').trim();
 
         const productQrDataUrl = await QRCode.toDataURL(qrUrl, {
-          width: 600,
+          width: 500,
           margin: 1,
           errorCorrectionLevel: 'M',
           color: { dark: '#000000', light: '#FFFFFF' }
@@ -522,22 +496,12 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
         pdf.rect(margin, margin, pageWidth - 2 * margin, pageHeight - 2 * margin);
 
         pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(logoFontSize);
-        try {
-          pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left', stroke: true });
-        } catch (e) {
-          pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left' });
-        }
-
         pdf.setFontSize(uuidFontSize);
-        pdf.setFont('helvetica', 'bold');
         pdf.text(shortId, pageWidth - margin, margin + (uuidFontSize * 0.35), { align: 'right' });
 
-        pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(8);
-        const fullUuidLines = pdf.splitTextToSize(uuid, pageWidth - 2 * margin - 8);
-        const fullUuidY = margin + (uuidFontSize * 0.35) + 4;
-        pdf.text(fullUuidLines, pageWidth - margin, fullUuidY, { align: 'right' });
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(logoFontSize);
+        pdf.text('4TL', pageWidth / 2, pageHeight - margin - 1, { align: 'center' });
 
         const qrX = margin;
         const qrY = (pageHeight - qrSize) / 2;
@@ -546,25 +510,17 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
         const nameX = qrX + qrSize + spacing;
         const nameMaxWidth = pageWidth - margin - nameX;
 
-        let productFontSize = productNameMaxFont;
         pdf.setFont('helvetica', 'bold');
-        while (productFontSize >= productNameMinFont) {
-          pdf.setFontSize(productFontSize);
-          if (pdf.getTextWidth(productName) <= nameMaxWidth) break;
-          productFontSize -= 1;
+        pdf.setFontSize(productNameFontSize);
+        const wrappedName = pdf.splitTextToSize(productName, nameMaxWidth);
+        const displayNameLines = wrappedName.slice(0, 4);
+        if (wrappedName.length > 4) {
+          const lastLine = displayNameLines[3];
+          displayNameLines[3] = `${lastLine.slice(0, Math.max(0, lastLine.length - 3))}...`;
         }
 
-        let displayName = productName;
-        pdf.setFontSize(productFontSize);
-        if (pdf.getTextWidth(displayName) > nameMaxWidth) {
-          while (displayName.length > 0 && pdf.getTextWidth(displayName + '...') > nameMaxWidth) {
-            displayName = displayName.slice(0, -1);
-          }
-          displayName = displayName + '...';
-        }
-
-        const nameY = qrY + (productFontSize * 0.35);
-        pdf.text(displayName, nameX, nameY, { align: 'left' });
+        const nameY = margin + 11;
+        pdf.text(displayNameLines, nameX, nameY, { align: 'left' });
       }
 
       const fileName = `QR_Bulk_${selectedProducts.length}_labels_${Date.now()}.pdf`;
@@ -588,21 +544,19 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
       const pageWidth = 77.98;
       const pageHeight = 52;
       const margin = 1;
-      const qrSize = 7;
-      const spacing = 1.5;
-      const logoFontSize = 18;
+      const qrSize = 16;
+      const spacing = 2;
+      const logoFontSize = 14;
       const uuidFontSize = 12;
-      const productNameMaxFont = 18;
-      const productNameMinFont = 16;
+      const productNameFontSize = 10;
       const qrId = product.qrCodeId || product.id;
       const uuidShort = qrId.split('-').pop().substring(0, 5).toUpperCase();
-      const uuid = qrId;
-      const productName = (product.product || 'Unknown').toUpperCase();
+      const productName = (product.product || 'Unknown').trim();
 
       // Generate product QR code once
       const qrUrl = makeQrUrl(qrId);
       const productQrDataUrl = await QRCode.toDataURL(qrUrl, {
-        width: 600,
+        width: 500,
         margin: 1,
         errorCorrectionLevel: 'M',
         color: { dark: '#000000', light: '#FFFFFF' }
@@ -620,22 +574,12 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
       pdf.rect(margin, margin, pageWidth - 2 * margin, pageHeight - 2 * margin);
 
       pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(logoFontSize);
-      try {
-        pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left', stroke: true });
-      } catch (e) {
-        pdf.text('4TL', margin, margin + (logoFontSize * 0.35), { align: 'left' });
-      }
-
       pdf.setFontSize(uuidFontSize);
-      pdf.setFont('helvetica', 'bold');
       pdf.text(uuidShort, pageWidth - margin, margin + (uuidFontSize * 0.35), { align: 'right' });
 
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(8);
-      const fullUuidLines = pdf.splitTextToSize(uuid, pageWidth - 2 * margin - 8);
-      const fullUuidY = margin + (uuidFontSize * 0.35) + 4;
-      pdf.text(fullUuidLines, pageWidth - margin, fullUuidY, { align: 'right' });
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(logoFontSize);
+      pdf.text('4TL', pageWidth / 2, pageHeight - margin - 1, { align: 'center' });
 
       const qrX = margin;
       const qrY = (pageHeight - qrSize) / 2;
@@ -643,26 +587,17 @@ const InventoryList = ({ inventory, setView, setCurrentProduct, setCurrentQrCode
 
       const nameX = qrX + qrSize + spacing;
       const nameMaxWidth = pageWidth - margin - nameX;
-
-      let productFontSize = productNameMaxFont;
       pdf.setFont('helvetica', 'bold');
-      while (productFontSize >= productNameMinFont) {
-        pdf.setFontSize(productFontSize);
-        if (pdf.getTextWidth(productName) <= nameMaxWidth) break;
-        productFontSize -= 1;
+      pdf.setFontSize(productNameFontSize);
+      const wrappedName = pdf.splitTextToSize(productName, nameMaxWidth);
+      const displayNameLines = wrappedName.slice(0, 4);
+      if (wrappedName.length > 4) {
+        const lastLine = displayNameLines[3];
+        displayNameLines[3] = `${lastLine.slice(0, Math.max(0, lastLine.length - 3))}...`;
       }
 
-      let displayName = productName;
-      pdf.setFontSize(productFontSize);
-      if (pdf.getTextWidth(displayName) > nameMaxWidth) {
-        while (displayName.length > 0 && pdf.getTextWidth(displayName + '...') > nameMaxWidth) {
-          displayName = displayName.slice(0, -1);
-        }
-        displayName = displayName + '...';
-      }
-
-      const nameY = qrY + (productFontSize * 0.35);
-      pdf.text(displayName, nameX, nameY, { align: 'left' });
+      const nameY = margin + 11;
+      pdf.text(displayNameLines, nameX, nameY, { align: 'left' });
 
       const filename = `${productName}-Label-${new Date().toISOString().slice(0,10)}.pdf`;
       pdf.save(filename);
